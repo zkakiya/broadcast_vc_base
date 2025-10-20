@@ -27,7 +27,7 @@ const BASE_ARGS = (filePath, outDir) => ([
   '--temperature', '0.0',
   '--beam_size', '1',
   '--condition_on_previous_text', 'False',
-  '--no_speech_threshold', '0.4',
+  '--no_speech_threshold', process.env.WHISPER_NO_SPEECH ?? '0.3',
   '--compression_ratio_threshold', '2.4',
 ]);
 

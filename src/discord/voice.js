@@ -66,10 +66,12 @@ export async function joinAndRecordVC() {
 
     console.log(`🔊 ${userId} started speaking`);
 
-    // 無音 300ms で1発話区切り（分割過多を防止）
-    const opusStream = receiver.subscribe(userId, {
-      end: { behavior: EndBehaviorType.AfterSilence, duration: 300 },
-    });
+     // 無音しきい値（ms）は環境変数で可変。既定600ms（取りこぼし低減）
+     const SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 600);
+     const opusStream = receiver.subscribe(userId, {
+       end: { behavior: EndBehaviorType.AfterSilence, duration: Number(process.env.VAD_SILENCE_MS||600) },
+     });
+
     opusStream.setMaxListeners(0);
 
     // 一時WAV
@@ -98,7 +100,20 @@ export async function joinAndRecordVC() {
       // FileWriter flush 待ち（安全策）
       setTimeout(async () => {
         try {
-          // Whisperは直列実行で負荷を平準化
+          // ★ ここで即座に開放：次の発話をブロックしない
+          activeSessions.delete(userId);
+          // WAVの最小長をチェック（48kHz/mono なら 1秒 ≒ 96KB + ヘッダ）
+          const st = fs.statSync(wavPath);
+          const MIN_WAV_BYTES = Number(process.env.MIN_WAV_BYTES ?? 48000); // 目安:0.5秒
+          if (st.size < MIN_WAV_BYTES) {
+            // 短すぎる断片は静かにスキップ（ログ抑制は環境変数で）
+            if (process.env.SHORT_WAV_LOG !== '0') {
+              console.log(`(skip) short wav: ${st.size}B < ${MIN_WAV_BYTES}B`);
+            }
+            // 先に消して終了
+            try { fs.unlinkSync(wavPath); } catch {}
+            return; // ★ ここで終わり（throwしない）
+          }          // Whisperは直列実行で負荷を平準化
           const text = await enqueue(() => transcribeAudioGPU(wavPath));
 
           if (text && text.length) {
@@ -147,7 +162,6 @@ export async function joinAndRecordVC() {
           fs.unlink(wavPath, (err) => {
             if (err) console.warn('WAV delete failed:', err?.message);
           });
-          activeSessions.delete(userId);
         }
       }, 100);
     });
