@@ -1,0 +1,60 @@
+/* public/styles.css */
+:root {
+  --fg: #fff;
+  --bubble-bg: rgba(34,34,34,0.9);
+  --tr-fg: #ffd166;
+  --gap: 12px;
+  --radius: 16px;
+  --maxw: 1200px;
+  --pad: 24px;
+  --font: system-ui, -apple-system, "Noto Sans JP", "Segoe UI", Roboto, sans-serif;
+}
+
+html, body {
+  margin: 0; height: 100%; color: var(--fg);
+  background: rgba(0,0,0,0); font-family: var(--font);
+  height: 100vh;
+  width: 100vw;
+  max-height: 100vh;
+}
+
+#safe-area {
+  box-sizing: border-box;
+  padding: var(--pad);
+  height: 100vh; max-width: var(--maxw); margin: 0 auto;
+  display: flex; flex-direction: column; gap: var(--gap);
+}
+
+#timeline {
+  flex: 1; display: flex; flex-direction: column; gap: var(--gap);
+  overflow: hidden;
+}
+
+#now {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  width: 100vw;
+}
+
+.entry {
+  display: flex; align-items: flex-start; gap: var(--gap);
+}
+.entry.side-right { flex-direction: row-reverse; }
+
+.avatar {
+  display: block; border-radius: 12px; object-fit: cover;
+}
+
+.bubble {
+  background: var(--bubble-bg);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  line-height: 1.4;
+  max-width: 90%;
+}
+.bubble.big { font-size: 1.6rem; padding: 14px 18px; }
+
+.name { font-weight: 700; margin-bottom: 4px; }
+.text { white-space: pre-wrap; word-break: break-word; }
+.tr { margin-top: 6px; color: var(--tr-fg); font-size: 0.9em; }

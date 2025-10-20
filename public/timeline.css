@@ -1,0 +1,79 @@
+:root {
+    --fg: #fff;
+    --text-stroke: #000;
+    --bg: rgba(0, 0, 0, 0.4);
+    --bubble: transparent;
+    --radius: 14px;
+    --font: "ヒラギノ角ゴ Pro", "游ゴシック体", YuGothic, "游ゴシック Medium", "Yu Gothic Medium", "游ゴシック", "Yu Gothic", sans-serif;
+    --pad: 24px;
+    --gap: 5px 0;
+    --maxw: 1000px;
+}
+
+html,
+body {
+    margin: 0;
+    height: 100vh;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font);
+    font-weight: bold;
+    -webkit-text-stroke: 0.5px var(--text-stroke);
+    line-height: 1.2;
+}
+
+#safe-area {
+    box-sizing: border-box;
+    padding: var(--pad);
+    height: 100vh;
+    max-width: var(--maxw);
+    margin: 0 auto
+}
+
+#timeline {
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+    height: 100%;
+    overflow: hidden
+}
+
+.entry {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px
+}
+
+.entry.side-right {
+    flex-direction: row-reverse
+}
+
+.pfp {
+    display: block;
+    border-radius: 10px;
+    object-fit: cover
+}
+
+.bubble {
+    background: var(--bubble);
+    border-radius: var(--radius);
+    padding: 0.25rem 0;
+    max-width: 100%;
+    text-align: right;
+}
+
+.name {
+    font-weight: 700;
+    margin-bottom: 4px;
+    text-align: left;
+}
+
+.text {
+    white-space: pre-wrap;
+    word-break: break-word
+}
+
+.tr {
+    margin-top: 6px;
+    opacity: .9
+}

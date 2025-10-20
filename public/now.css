@@ -1,0 +1,108 @@
+:root {
+    --fg: #fff;
+    --text-stroke: #000;
+    --bg: rgba(0, 0, 0, 0);
+    --bubble: transparent;
+    --radius: 16px;
+    --font: "ヒラギノ角ゴ Pro", "游ゴシック体", YuGothic, "游ゴシック Medium", "Yu Gothic Medium", "游ゴシック", "Yu Gothic", sans-serif;
+    --pad: 24px;
+    --maxw: 100%;
+
+    /* アバターデッキ用（JSからも上書き可能） */
+    --pfp-size: 72px;
+    --pfp-inactive: 0.3;
+    /* 非アクティブ時の透明度 */
+}
+
+html,
+body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font);
+    font-weight: bold;
+    -webkit-text-stroke: 1.0px var(--text-stroke);
+    line-height: 1.2;
+}
+
+#safe-area {
+    box-sizing: border-box;
+    padding: var(--pad);
+    height: 100vh;
+    max-width: var(--maxw);
+    margin: 0 auto;
+    position: relative;
+    display: flex;
+    align-items: flex-end
+}
+
+/* 最新バブル */
+.bubble {
+    width: 100%;
+    padding: 16px 20px;
+    background: var(--bubble);
+    border-radius: var(--radius);
+    opacity: 1;
+    transition: opacity 600ms ease; /* お好みで */
+    will-change: opacity;
+}
+
+/* フェード中 */
+.bubble.is-fading {
+  opacity: 0; /* ここは !important なくてもOKにする設計 */
+}
+
+.bubble .name {
+    font-weight: 700;
+    margin-bottom: 6px
+}
+
+.bubble .text {
+    white-space: pre-wrap;
+    word-break: break-word
+}
+
+.bubble .tr {
+    margin-top: 6px;
+    opacity: .9
+}
+
+/* ★ アバターデッキ（固定表示） */
+#avatars {
+    position: absolute;
+    inset: var(--pad);
+    pointer-events: none;
+    /* 誤操作防止。必要なら外す */
+}
+
+/* アバター共通（配置はクラスで変える） */
+.deck-avatar {
+    position: absolute;
+    width: var(--pfp-size);
+    height: var(--pfp-size);
+    border-radius: 12px;
+    object-fit: cover;
+    opacity: var(--pfp-inactive);
+    transition: opacity 200ms ease;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+}
+
+/* アクティブ話者だけ不透明 */
+.deck-avatar.active {
+    opacity: 1
+}
+
+/* 位置（最小の雛形）。slot=0,1,2... で縦に並べる */
+.deck-avatar.side-left {
+    left: 0;
+}
+
+.deck-avatar.side-right {
+    right: 0;
+}
+
+/* 縦位置は JS が --slot を付けます（例: 0,1,2...）。式はご自由に調整 */
+.deck-avatar {
+    top: calc(15% + (var(--slot, 0) * 22%));
+}
