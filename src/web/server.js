@@ -3,6 +3,8 @@ import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { CONFIG } from '../config.js';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -11,23 +13,21 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const httpServer = createServer(app);
 export const io = new SocketIOServer(httpServer, {
-  cors: { origin: '*' },
+  cors: { origin: CONFIG.corsOrigin || '*' },
 });
 
 // 静的配信（OBS はこのURLをブラウザソースで開く）
 const pubDir = path.join(__dirname, '../../public');
+// ルートを先に握る（ index.html があっても確実に now.html を出す ）
+app.get('/', (_, res) => res.redirect('/now.html'));
 app.use(express.static(pubDir));
 
-// ヘルスチェック
+// ヘルスチェックなどはこのあとでOK
 app.get('/healthz', (_, res) => res.send('ok'));
 
 // 起動
-export function startWebServer(port = process.env.WEB_PORT || 3000) {
+export function startWebServer(port = CONFIG.webPort) {
   httpServer.listen(port, () => {
     console.log(`🌍 Subtitles page: http://localhost:${port}/`);
   });
 }
-
-// すでにある静的配信のままでOK
-// 任意：トップを「最新発言」へリダイレクト
-app.get('/', (_, res) => res.redirect('/now.html'));

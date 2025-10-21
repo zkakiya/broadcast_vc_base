@@ -12,6 +12,10 @@ const AUDIO_EXTS = new Set(['.wav', '.mp3', '.m4a', '.aac', '.flac', '.ogg', '.o
  * @param {boolean} [opts.dryRun=false] - true なら削除せずログだけ
  */
 export async function cleanRecordingsDir({ dir, maxAgeMinutes = 0, dryRun = false } = {}) {
+  if (!dir || typeof dir !== 'string') {
+    console.error('[cleanup] invalid dir:', dir);
+    return;
+  }
   const abs = path.resolve(dir);
   const now = Date.now();
   const maxAgeMs = Math.max(0, Number(maxAgeMinutes)) * 60 * 1000;

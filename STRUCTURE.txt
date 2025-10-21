@@ -1,0 +1,37 @@
+.
+├── .gitignore
+├── STRUCTURE.txt
+├── package-lock.json
+├── package.json
+├── public
+│   ├── app.js
+│   ├── avatars
+│   │   ├── default.png
+│   │   ├── haracternick_still.png
+│   │   ├── kakiya_still.png
+│   │   ├── timeline
+│   │   └── yoneda_still.png
+│   ├── index.html
+│   ├── now.css
+│   ├── now.html
+│   ├── now.js
+│   ├── style.css
+│   ├── timeline.css
+│   ├── timeline.html
+│   └── timeline.js
+└── src
+    ├── config.js
+    ├── discord
+    │   ├── client.js
+    │   ├── transcribe.js
+    │   └── voice.js
+    ├── index.js
+    ├── recordings
+    ├── registry
+    │   └── speakers.js
+    ├── utils
+    │   └── cleanup.js
+    └── web
+        └── server.js
+
+10 directories, 25 files

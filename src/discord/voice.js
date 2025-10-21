@@ -14,7 +14,9 @@ import {
 
 import { client, GUILD_ID, VOICE_CHANNEL_ID, TEXT_CHANNEL_ID } from './client.js';
 import { transcribeAudioGPU } from './transcribe.js';
-import { io } from '../web/server.js';
+// index.js で作った io を受け取る style（将来的選択肢）
+let ioRef = null;
+export function setIo(io) { ioRef = io; }
 import { getSpeaker } from '../registry/speakers.js';
 
 // __dirname (ESM)

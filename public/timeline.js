@@ -22,6 +22,7 @@
         img.src = src; img.alt = e.name||'speaker';
         img.width = pfpSize; img.height = pfpSize;
         img.decoding='async'; img.loading='lazy';
+        img.referrerPolicy = 'no-referrer';
         row.appendChild(img);
       }
 
