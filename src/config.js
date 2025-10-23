@@ -22,5 +22,9 @@ export const CONFIG = {
   maxAgeMinutes: Number(process.env.CLEAN_RECORDINGS_MAX_AGE_MIN ?? 0),
   dryRun: process.env.CLEAN_RECORDINGS_DRY_RUN === '1',
   },
+  translate: {
+    enabled: process.env.TRANSLATE_ENABLED === '1',
+    defaultTarget: process.env.TRANSLATE_TARGET_DEFAULT || 'en',
+  },
 };
 

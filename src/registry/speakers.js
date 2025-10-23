@@ -37,3 +37,7 @@ export function getSpeaker(userId) {
     lang: 'ja',
   };
 }
+
+export function getSpeakerConfig(userId) {
+  return SPEAKERS.get(userId) || null;
+}
