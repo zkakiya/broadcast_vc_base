@@ -18,6 +18,8 @@ import { transcribeAudioGPU } from './transcribe.js';
 let ioRef = null;
 export function setIo(io) { ioRef = io; }
 import { getSpeaker } from '../registry/speakers.js';
+import { CONFIG } from '../config.js';
+import { translateText } from '../utils/translate.js';
 
 // --- 翻訳ユーティリティ（OpenAI優先 / 最小実装） -----------------
 const TRANSLATE_ENABLED = process.env.TRANSLATE_ENABLED === '1';
@@ -145,14 +147,13 @@ export async function joinAndRecordVC() {
           // WAVの最小長をチェック（48kHz/mono なら 1秒 ≒ 96KB + ヘッダ）
           const st = fs.statSync(wavPath);
           const MIN_WAV_BYTES = Number(process.env.MIN_WAV_BYTES ?? 48000); // 目安:0.5秒
-          let alreadyDeleted = false;
           if (st.size < MIN_WAV_BYTES) {
             // 短すぎる断片は静かにスキップ（ログ抑制は環境変数で）
             if (process.env.SHORT_WAV_LOG !== '0') {
               console.log(`(skip) short wav: ${st.size}B < ${MIN_WAV_BYTES}B`);
             }
-            // 削除は finally に任せず、ここで行う → 二重削除防止のフラグを立てる
-            try { fs.unlinkSync(wavPath); alreadyDeleted = true; } catch {}
+            // 先に削除して終了
+            try { fs.unlinkSync(wavPath); } catch {}
             return; // ★ ここで終わり（throwしない）
           }
 
@@ -163,20 +164,24 @@ export async function joinAndRecordVC() {
             // 短時間の完全一致は重複として破棄（ソフト・デュープ）
             const prev = lastTexts.get(userId);
 
-            // 翻訳先ターゲット：明示（env）> 自動（話者langがjaならen、そうでなければja）
-            const targetLang =
-              TRANSLATE_TARGET_DEFAULT ||
-              ((sp.lang || 'ja').toLowerCase() === 'ja' ? 'en' : 'ja');
-            const trText = await translateTextMinimal({
-              text,
-              source: sp.lang || undefined,
-              target: targetLang,
-            });
+            // // 翻訳先ターゲット：明示（env）> 自動（話者langがjaならen、そうでなければja）
+            // const targetLang =
+            //   TRANSLATE_TARGET_DEFAULT ||
+            //   ((sp.lang || 'ja').toLowerCase() === 'ja' ? 'en' : 'ja');
+            // const trText = await translateTextMinimal({
+            //   text,
+            //   source: sp.lang || undefined,
+            //   target: targetLang,
+            // });
 
             if (prev && prev.text === text && Date.now() - prev.ts < 3000) {
               return;
             }
             lastTexts.set(userId, { text, ts: Date.now() });
+
+            // 翻訳: 話者個別 > 既定ターゲット
+            const target = sp?.translateTo || CONFIG.translate.defaultTarget;
+            const trText = await translateText({ text, target });
 
             const payload = {
               id: `${userId}-${Date.now()}`,
@@ -189,8 +194,7 @@ export async function joinAndRecordVC() {
               text,
               lang: sp.lang || 'ja',
               ts: Date.now(),
-              // 翻訳（あれば）
-              ...(trText ? { tr: { lang: targetLang, text: trText } } : {}),
+              tr: trText ? { to: target, text: trText } : undefined,
             };
 
             // 1) OBS字幕ページへ
@@ -206,8 +210,11 @@ export async function joinAndRecordVC() {
                 if (trText) {
                   await textChannel.send(`**${sp.name}**\n${text}\n> _${trText}_`);
                 } else {
+                if (trText) {
+                  await textChannel.send(`**${sp.name}**\n${text}\n> _${trText}_`);
+                } else {
                   await textChannel.send(`**${sp.name}**: ${text}`);
-                }
+                }                }
                } else {
                 console.warn('Text channel not found or not text-based');
               }

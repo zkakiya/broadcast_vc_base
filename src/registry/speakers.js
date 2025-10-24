@@ -7,6 +7,7 @@ export const SPEAKERS = {
     avatar: '/avatars/kakiya_still.png', // ← ここを立ち絵に
     icon:   '/avatars/timeline/icon_kakiya.webp', // タイムライン用軽量（小さめ・WebP推奨）
     lang: 'ja',
+    translateTo: 'en',
   },
   '463714335596740638': {
     name: 'ヨネダ',
@@ -15,6 +16,7 @@ export const SPEAKERS = {
     avatar: '/avatars/yoneda_still.png', // ← ここを立ち絵に
     icon:   '/avatars/timeline/icon_yoneda.webp', // タイムライン用軽量（小さめ・WebP推奨）
     lang: 'ja',
+    translateTo: 'en',
   },
   '682709913335890031': {
     name: 'Haracternick',
@@ -23,6 +25,7 @@ export const SPEAKERS = {
     avatar: '/avatars/haracternick_still.png', // ← ここを立ち絵に
     icon:   '/avatars/timeline/icon_haracternick.webp', // タイムライン用軽量（小さめ・WebP推奨）
     lang: 'en',
+    translateTo: 'ja',
   },
   // ...他の話者
 };

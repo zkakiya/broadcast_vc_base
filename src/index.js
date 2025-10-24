@@ -16,11 +16,12 @@ await cleanRecordingsDir(CONFIG.clean);
 
 setIo(io);
 
-client.once('ready', async () => {
-  console.log(`✅ Logged in as ${client.user.tag}`);
-  startWebServer();             // 👈 OBS向けページ起動
-  await joinAndRecordVC();      // 👈 VC録音＆文字起こし開始
-});
+ // v14 互換 + v15 以降の先取り
+ const onClientReady = async () => {
+   console.log(`✅ Logged in as ${client.user.tag}`);
+   await joinAndRecordVC();
+ };
+ ['clientReady', 'ready'].forEach(ev => client.once(ev, onClientReady));
 
 // すべてのイベントハンドラを登録し終えてからログイン開始
 client.login(CONFIG.botToken).catch(console.error);
