@@ -12,7 +12,19 @@ const MAX_AGE_MIN = process.env.CLEAN_RECORDINGS_MAX_AGE_MIN
   : 0; // 0 = すべて削除
 const DRY_RUN = process.env.CLEAN_RECORDINGS_DRY_RUN === '1';
 
+console.log('[boot] index.js start');
+
+console.log('[boot] cleanup…');
 await cleanRecordingsDir(CONFIG.clean);
+console.log('[boot] cleanup done');
+
+console.log('[boot] start web server…');
+try {
+  await startWebServer();           // ここで listening ログが出るはず
+  console.log('[boot] web server started');
+} catch (e) {
+  console.error('[boot] web server failed:', e);
+}
 
 setIo(io);
 
@@ -21,7 +33,7 @@ setIo(io);
    console.log(`✅ Logged in as ${client.user.tag}`);
    await joinAndRecordVC();
  };
- ['clientReady', 'ready'].forEach(ev => client.once(ev, onClientReady));
-
+['clientReady', 'ready'].forEach(ev => client.once(ev, onClientReady));
+console.log('[boot] login…');
 // すべてのイベントハンドラを登録し終えてからログイン開始
 client.login(CONFIG.botToken).catch(console.error);
