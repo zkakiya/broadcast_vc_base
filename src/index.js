@@ -33,7 +33,13 @@ setIo(io);
    console.log(`✅ Logged in as ${client.user.tag}`);
    await joinAndRecordVC();
  };
+// v14（ready）と v15（clientReady）の両対応
 ['clientReady', 'ready'].forEach(ev => client.once(ev, onClientReady));
+
+// 念のため、未ハンドルの error を握る（クラッシュ防止）
+client.on('error', (err) => console.error('[client] error:', err));
+process.on('unhandledRejection', (r) => console.error('[unhandledRejection]', r));
+process.on('uncaughtException', (e) => console.error('[uncaughtException]', e));
 console.log('[boot] login…');
 // すべてのイベントハンドラを登録し終えてからログイン開始
 client.login(CONFIG.botToken).catch(console.error);

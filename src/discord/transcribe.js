@@ -22,7 +22,7 @@ const BASE_ARGS = (filePath, outDir) => ([
   '--model', process.env.WHISPER_MODEL || 'small', // small 推奨（負荷と精度のバランス）
   '--language', 'ja',
   '--task', 'transcribe',
-  '--output_format', 'txt',
+  '--output_format', 'json',
   '--output_dir', outDir,
   '--temperature', '0.0',
   '--beam_size', '1',
@@ -41,7 +41,7 @@ const BASE_ARGS = (filePath, outDir) => ([
 export async function transcribeAudioGPU(filePath) {
   const outDir = path.dirname(filePath);
   const baseName = path.basename(filePath, path.extname(filePath));
-  const txtPath = path.join(outDir, `${baseName}.txt`);
+  const jsonPath = path.join(outDir, `${baseName}.json`);
 
   const args = BASE_ARGS(filePath, outDir);
 
@@ -58,12 +58,42 @@ export async function transcribeAudioGPU(filePath) {
     }
   }
 
-  if (!fs.existsSync(txtPath)) return null;
+  if (!fs.existsSync(jsonPath)) return null;
 
-  const text = fs.readFileSync(txtPath, 'utf8').trim();
+  // Whisper JSON を解析して低信頼セグメントを除外
+  const j = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
+  const segs = Array.isArray(j?.segments) ? j.segments : [];
+
+  const MIN_AVG_LOGPROB = Number(process.env.WHISPER_MIN_AVG_LOGPROB ?? -1.0);   // これ未満は捨て
+  const MAX_NO_SPEECH   = Number(process.env.WHISPER_MAX_NO_SPEECH ?? 0.60);    // これ超えは捨て
+
+  const kept = [];
+  for (const s of segs) {
+    const lp = Number(s?.avg_logprob ?? 0);
+    const ns = Number(s?.no_speech_prob ?? 0);
+    if (lp < MIN_AVG_LOGPROB) continue;
+    if (ns > MAX_NO_SPEECH) continue;
+    if (typeof s?.text === 'string' && s.text.trim()) {
+      kept.push(s.text);
+    }
+  }
+
+  let text = kept.join('').trim();
+
+  // 任意: 末尾の「ありがち締め文」を剥がす（誤補完に効く）
+  if (text) {
+    const STRIP_CLOSERS = (process.env.WHISPER_STRIP_CLOSERS ?? '1') === '1';
+    if (STRIP_CLOSERS) {
+      const closers = [
+        /(?:ご視聴|ご清聴)ありがとうございました[。！!]?$/u,
+        /以上です[。！!]?$/u,
+        /失礼いたします[。！!]?$/u,
+      ];
+      for (const re of closers) text = text.replace(re, '').trim();
+    }
+  }
 
   // 後片付け
-  try { fs.unlinkSync(txtPath); } catch {}
-
+  try { fs.unlinkSync(jsonPath); } catch {}
   return text || null;
 }

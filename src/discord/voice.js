@@ -81,17 +81,60 @@ export async function joinAndRecordVC() {
   const voiceChannel = await guild.channels.fetch(VOICE_CHANNEL_ID);
   if (!voiceChannel) throw new Error('Voice channel not found');
 
-  const connection = joinVoiceChannel({
-    channelId: voiceChannel.id,
-    guildId: guild.id,
-    adapterCreator: guild.voiceAdapterCreator,
-    selfDeaf: false,
-    selfMute: false,
-  });
+  let attempt = 0;
+  const maxAttempts = 4;
+  const baseDelay = 1500;
+  let connection;
 
-  await entersState(connection, VoiceConnectionStatus.Ready, 30_000);
-  console.log('🎧 Voice connection ready');
+  while (attempt < maxAttempts) {
+    attempt++;
+    try {
+      connection = joinVoiceChannel({
+        channelId: voiceChannel.id,
+        guildId: guild.id,
+        adapterCreator: guild.voiceAdapterCreator,
+        selfDeaf: false,
+        selfMute: false,
+      });
 
+      // ログとエラーハンドラ
+      connection.on('error', (err) => {
+        console.error('[voice] connection error:', err?.message || err);
+      });
+      connection.on('stateChange', (oldS, newS) => {
+        console.log(`[voice] state ${oldS.status} -> ${newS.status}`);
+      });
+
+      // 監視：Disconnected → Connecting/Ready へ自動回復（数回まで）
+      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        console.warn('[voice] disconnected, trying to recover…');
+        try {
+          await Promise.race([
+            entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+            entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+          ]);
+          console.log('[voice] recovered');
+        } catch {
+          console.warn('[voice] rejoin required, destroying connection');
+          try { connection.destroy(); } catch {}
+          // 再入室（バックグラウンドで）
+          joinAndRecordVC().catch(e => console.error('[voice] rejoin failed:', e));
+        }
+      });
+
+      // 準備完了を余裕をもって待つ
+      await entersState(connection, VoiceConnectionStatus.Ready, 60_000);
+      console.log('🎧 Voice connection ready');
+      break; // 成功
+    } catch (e) {
+      console.warn(`[voice] join attempt ${attempt} failed:`, e?.code || e?.message || e);
+      try { connection?.destroy(); } catch {}
+      if (attempt >= maxAttempts) throw e;
+      const wait = baseDelay * Math.pow(2, attempt - 1); // 1.5s, 3s, 6s...
+      await new Promise(r => setTimeout(r, wait));
+      continue; // リトライ
+    }
+  }
   const receiver = connection.receiver;
   receiver.speaking.setMaxListeners(100);
 

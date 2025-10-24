@@ -9,9 +9,13 @@
     --maxw: 100%;
 
     /* アバターデッキ用（JSからも上書き可能） */
-    --pfp-size: 72px;
+    --pfp-size: 75vh;
     --pfp-inactive: 0.3;
     /* 非アクティブ時の透明度 */
+}
+
+* {
+    box-sizing: border-box;
 }
 
 html,
@@ -28,29 +32,35 @@ body {
 
 #safe-area {
     box-sizing: border-box;
-    padding: var(--pad);
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-end;
     height: 100vh;
+    padding: 0;
+    position: relative;
     max-width: var(--maxw);
     margin: 0 auto;
-    position: relative;
-    display: flex;
-    align-items: flex-end
 }
 
 /* 最新バブル */
 .bubble {
-    width: 100%;
-    padding: 16px 20px;
+    justify-content: flex-end;
     background: var(--bubble);
     border-radius: var(--radius);
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    padding: 16px 20px;
     opacity: 1;
-    transition: opacity 600ms ease; /* お好みで */
+    transition: opacity 600ms ease;
+    /* お好みで */
     will-change: opacity;
 }
 
 /* フェード中 */
 .bubble.is-fading {
-  opacity: 0; /* ここは !important なくてもOKにする設計 */
+    opacity: 0;
+    /* ここは !important なくてもOKにする設計 */
 }
 
 .bubble .name {
@@ -71,7 +81,8 @@ body {
 /* ★ アバターデッキ（固定表示） */
 #avatars {
     position: absolute;
-    inset: var(--pad);
+    inset: 0;
+    overflow: hidden;
     pointer-events: none;
     /* 誤操作防止。必要なら外す */
 }
@@ -79,18 +90,20 @@ body {
 /* アバター共通（配置はクラスで変える） */
 .deck-avatar {
     position: absolute;
-    width: var(--pfp-size);
     height: var(--pfp-size);
     border-radius: 12px;
     object-fit: cover;
     opacity: var(--pfp-inactive);
-    transition: opacity 200ms ease;
+    transition: opacity .25s ease, filter .25s ease, transform .25s ease, box-shadow .25s ease;
     box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+    /* ↓ 非アクティブ時に少し落とす（必要なければ削除） */
+    filter: grayscale(100%) saturate(0.3) brightness(0.9) contrast(0.95);
 }
 
 /* アクティブ話者だけ不透明 */
 .deck-avatar.active {
-    opacity: 1
+    opacity: 1;
+    filter: none;
 }
 
 /* 位置（最小の雛形）。slot=0,1,2... で縦に並べる */
@@ -105,4 +118,40 @@ body {
 /* 縦位置は JS が --slot を付けます（例: 0,1,2...）。式はご自由に調整 */
 .deck-avatar {
     top: calc(15% + (var(--slot, 0) * 22%));
+}
+
+/* === マスクはオプトイン（data-mask="1" の時だけ適用） === */
+.deck-avatar[data-mask="1"] {
+    -webkit-mask-image: var(--mask-image);
+    mask-image: var(--mask-image);
+    -webkit-mask-mode: alpha;
+    mask-mode: alpha;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    -webkit-mask-position: center;
+    mask-position: center;
+    -webkit-mask-size: contain;
+    mask-size: contain;
+}
+
+/* もし好みなら、軽い鼓動アニメ */
+@keyframes pfpPulse {
+
+    0%,
+    100% {
+        transform: scale(1);
+    }
+
+    50% {
+        transform: scale(1.08);
+    }
+}
+
+.deck-avatar.pulse {
+    animation: pfpPulse 600ms ease;
+}
+
+.deck-avatar.active {
+    outline: 3px solid rgba(255, 255, 255, .7);
+    outline-offset: 2px;
 }
