@@ -23,8 +23,8 @@
     // '999999999999999999': { x: 50,  y: 50, scale: 1.2, src: '/avatars/haracternick_still.png' },
     '272380840434991104': {
       x: 70,
-      y: 39,
-      scale: 1.1,
+      y: 41,
+      scale: 1.0,
       src: '/avatars/kakiya_still.png',
       mask: '/avatars/masks/kakiya_mask.png',
       name: 'カキヤ',             // バブル名の初期値
@@ -34,7 +34,7 @@
     '123456789012345678': {
       x: -10,
       y: 5,
-      scale: 1.2,
+      scale: 1.05,
       src: '/avatars/yoneda_still.png',
       mask: '/avatars/masks/yoneda_mask.png',
       name: 'ヨネダ',
@@ -43,8 +43,8 @@
     },
     '999999999999999999': {
       x: -15,
-      y: 39,
-      scale: 1.2,
+      y: 35,
+      scale: 1.1,
       src: '/avatars/haracternick_still.png',
       mask: '/avatars/masks/haracternick_mask.png',
       name: 'Haracternick',

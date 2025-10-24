@@ -93,11 +93,14 @@ body {
     height: var(--pfp-size);
     border-radius: 12px;
     object-fit: cover;
-    opacity: var(--pfp-inactive);
+    opacity: 1;
     transition: opacity .25s ease, filter .25s ease, transform .25s ease, box-shadow .25s ease;
     box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
     /* ↓ 非アクティブ時に少し落とす（必要なければ削除） */
     filter: grayscale(100%) saturate(0.3) brightness(0.9) contrast(0.95);
+    /* これを追加！ */
+    transform: scale(var(--scale, 1));
+    /* デフォルト1倍 */
 }
 
 /* アクティブ話者だけ不透明 */
