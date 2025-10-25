@@ -26,35 +26,6 @@ const TRANSLATE_ENABLED = process.env.TRANSLATE_ENABLED === '1';
 const TRANSLATE_TARGET_DEFAULT = process.env.TRANSLATE_TARGET_DEFAULT || ''; // 空なら後述の自動判定
 const hasOpenAI = !!process.env.OPENAI_API_KEY;
 
-async function translateTextMinimal({ text, source, target }) {
-  if (!TRANSLATE_ENABLED) return null;
-  if (!text || !target || (source && source.toLowerCase() === target.toLowerCase())) return null;
-  if (!hasOpenAI) return null; // ※必要なら DeepL/Libre を足せます
-  try {
-    const r = await fetch('https://api.openai.com/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: 'gpt-4o-mini',
-        temperature: 0.2,
-        messages: [
-          { role: 'system', content: `You are a translator. Translate from ${source || 'auto'} to ${target}. Output only the translation.` },
-          { role: 'user', content: text }
-        ],
-      }),
-    });
-    if (!r.ok) throw new Error(`OpenAI ${r.status}`);
-    const j = await r.json();
-    return j.choices?.[0]?.message?.content?.trim() || null;
-  } catch (e) {
-    console.warn('[translate] failed:', e?.message || e);
-    return null;
-  }
-}
-
 // __dirname (ESM)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -70,9 +41,11 @@ const lastTexts = new Map();       // userId -> { text, ts }
 // ── Whisper直列実行（負荷スパイク抑制） ───────────────────
 let last = Promise.resolve();
 function enqueue(task) {
-  last = last.then(() => task()).catch(() => {}).finally(() => {});
+  last = last.then(() => task()).catch(() => { }).finally(() => { });
   return last;
 }
+
+let currentConnection = null; // 追加：現在の接続を保持
 
 export async function joinAndRecordVC() {
   const guild = await client.guilds.fetch(GUILD_ID);
@@ -80,6 +53,11 @@ export async function joinAndRecordVC() {
 
   const voiceChannel = await guild.channels.fetch(VOICE_CHANNEL_ID);
   if (!voiceChannel) throw new Error('Voice channel not found');
+
+  if (currentConnection) {
+    try { currentConnection.destroy(); } catch { }
+    currentConnection = null;
+  }
 
   let attempt = 0;
   const maxAttempts = 4;
@@ -97,6 +75,8 @@ export async function joinAndRecordVC() {
         selfMute: false,
       });
 
+      currentConnection = connection; // ここで保持
+
       // ログとエラーハンドラ
       connection.on('error', (err) => {
         console.error('[voice] connection error:', err?.message || err);
@@ -105,30 +85,13 @@ export async function joinAndRecordVC() {
         console.log(`[voice] state ${oldS.status} -> ${newS.status}`);
       });
 
-      // 監視：Disconnected → Connecting/Ready へ自動回復（数回まで）
-      connection.on(VoiceConnectionStatus.Disconnected, async () => {
-        console.warn('[voice] disconnected, trying to recover…');
-        try {
-          await Promise.race([
-            entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-            entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
-          ]);
-          console.log('[voice] recovered');
-        } catch {
-          console.warn('[voice] rejoin required, destroying connection');
-          try { connection.destroy(); } catch {}
-          // 再入室（バックグラウンドで）
-          joinAndRecordVC().catch(e => console.error('[voice] rejoin failed:', e));
-        }
-      });
-
       // 準備完了を余裕をもって待つ
       await entersState(connection, VoiceConnectionStatus.Ready, 60_000);
       console.log('🎧 Voice connection ready');
       break; // 成功
     } catch (e) {
       console.warn(`[voice] join attempt ${attempt} failed:`, e?.code || e?.message || e);
-      try { connection?.destroy(); } catch {}
+      try { connection?.destroy(); } catch { }
       if (attempt >= maxAttempts) throw e;
       const wait = baseDelay * Math.pow(2, attempt - 1); // 1.5s, 3s, 6s...
       await new Promise(r => setTimeout(r, wait));
@@ -147,11 +110,11 @@ export async function joinAndRecordVC() {
 
     console.log(`🔊 ${userId} started speaking`);
 
-     // 無音しきい値（ms）は環境変数で可変。既定600ms（取りこぼし低減）
-     const SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 600);
-     const opusStream = receiver.subscribe(userId, {
-       end: { behavior: EndBehaviorType.AfterSilence, duration: Number(process.env.VAD_SILENCE_MS||600) },
-     });
+    // 無音しきい値（ms）は環境変数で可変。既定600ms（取りこぼし低減）
+    const SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 600);
+    const opusStream = receiver.subscribe(userId, {
+      end: { behavior: EndBehaviorType.AfterSilence, duration: Number(process.env.VAD_SILENCE_MS || 600) },
+    });
 
     opusStream.setMaxListeners(0);
 
@@ -176,7 +139,7 @@ export async function joinAndRecordVC() {
       if (s) s.closing = true;
 
       console.log(`⏹️ ${userId} presumed end of speech`);
-      try { wavWriter.end(); } catch {}
+      try { wavWriter.end(); } catch { }
 
       // FileWriter flush 待ち（安全策）
       setTimeout(async () => {
@@ -196,74 +159,83 @@ export async function joinAndRecordVC() {
               console.log(`(skip) short wav: ${st.size}B < ${MIN_WAV_BYTES}B`);
             }
             // 先に削除して終了
-            try { fs.unlinkSync(wavPath); } catch {}
+            try { fs.unlinkSync(wavPath); } catch { }
             return; // ★ ここで終わり（throwしない）
           }
 
           // Whisperは直列実行で負荷を平準化
-          const text = await enqueue(() => transcribeAudioGPU(wavPath));
+          const recognizedText = await enqueue(() => transcribeAudioGPU(wavPath));
 
-          if (text && text.length) {
+          if (recognizedText && recognizedText.length) {
             // 短時間の完全一致は重複として破棄（ソフト・デュープ）
             const prev = lastTexts.get(userId);
 
-            // // 翻訳先ターゲット：明示（env）> 自動（話者langがjaならen、そうでなければja）
-            // const targetLang =
-            //   TRANSLATE_TARGET_DEFAULT ||
-            //   ((sp.lang || 'ja').toLowerCase() === 'ja' ? 'en' : 'ja');
-            // const trText = await translateTextMinimal({
-            //   text,
-            //   source: sp.lang || undefined,
-            //   target: targetLang,
-            // });
 
-            if (prev && prev.text === text && Date.now() - prev.ts < 3000) {
+            if (prev && prev.text === recognizedText && Date.now() - prev.ts < 3000) {
               return;
             }
-            lastTexts.set(userId, { text, ts: Date.now() });
+            lastTexts.set(userId, { text: recognizedText, ts: Date.now() });
 
-            // 翻訳: 話者個別 > 既定ターゲット
-            const target = sp?.translateTo || CONFIG.translate.defaultTarget;
-            const trText = await translateText({ text, target });
+            // ここで必要情報を“確定”しておく（IIFE内では sp を使わない）
+            const speakerName = sp?.name || 'Speaker';
+            const speakerSide = sp?.side;
+            const speakerColor = sp?.color;
+            const speakerAvatar = sp?.avatar;
+            const speakerIcon = sp?.icon;
+            const translateTarget = sp?.translateTo || CONFIG?.translate?.defaultTarget;
 
+            const msgId = `${userId}-${Date.now()}`;
             const payload = {
-              id: `${userId}-${Date.now()}`,
+              id: msgId,
               userId,
-              name: sp.name,
-              side: sp.side,
-              color: sp.color,
-              avatar: sp.avatar,
-              icon: sp.icon, 
-              text,
+              name: speakerName,
+              side: speakerSide,
+              color: speakerColor,
+              avatar: speakerAvatar,
+              icon: speakerIcon,
+              text: recognizedText,
               lang: sp.lang || 'ja',
               ts: Date.now(),
-              tr: trText ? { to: target, text: trText } : undefined,
             };
+            if (ioRef) ioRef.emit('transcript', payload); // ★ 原文を即時表示
 
-            // 1) OBS字幕ページへ
-            if (ioRef) {
-              ioRef.emit('transcript', payload);
-            } else {
-              console.warn('[socket] ioRef is not set; skipped emit');
-            }
-            // 2) Discordテキストへ
+            // 2) Discordテキストへ（まず原文だけ送信、Messageを保持）
             try {
               const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID);
               if (textChannel && textChannel.isTextBased()) {
-                if (trText) {
-                  await textChannel.send(`**${sp.name}**\n${text}\n> _${trText}_`);
-                } else {
-                if (trText) {
-                  await textChannel.send(`**${sp.name}**\n${text}\n> _${trText}_`);
-                } else {
-                  await textChannel.send(`**${sp.name}**: ${text}`);
-                }                }
-               } else {
+                var sentMsg = await textChannel.send(`**${speakerName}**: ${recognizedText}`);
+              } else {
                 console.warn('Text channel not found or not text-based');
               }
             } catch (e) {
               console.error('❌ Failed to send message:', e);
             }
+
+            // 3) 翻訳は後追い（必要情報はすべて引数で渡す／同じ try 内で起動）
+            (async (origText, msgIdLocal, nameLocal, targetLocal, sentMsgLocal) => {
+              try {
+                if (!CONFIG?.translate?.enabled) return;
+                if (!targetLocal) return; // 送信先言語未設定なら何もしない
+                const tr = await translateText({ text: origText, target: targetLocal });
+                if (!tr) return;
+                // 配信画面に追記
+                if (ioRef) ioRef.emit('transcript_update', { id: msgIdLocal, tr: { to: targetLocal, text: tr } });
+                // Discord: 原文メッセージを編集して訳を追記
+                if (sentMsgLocal) {
+                  const newContent = `**${nameLocal}**\n${origText}\n> _${tr}_`;
+                  try {
+                    await sentMsgLocal.edit(newContent);
+                  } catch {
+                    // 失敗したらフォールバックで追記メッセージ
+                    const ch = await client.channels.fetch(TEXT_CHANNEL_ID);
+                    if (ch && ch.isTextBased()) await ch.send(`> _${tr}_`);
+                  }
+                }
+              } catch (e) {
+                console.warn('[translate async] failed:', e?.message || e);
+              }
+            })(recognizedText, msgId, speakerName, translateTarget, sentMsg);
+
           }
         } catch (e) {
           console.error('❌ Whisper error:', e);
@@ -276,7 +248,7 @@ export async function joinAndRecordVC() {
                 if (err && err.code !== 'ENOENT') console.warn('WAV delete failed:', err?.message);
               });
             }
-          } catch {}
+          } catch { }
         }
       }, 100);
     });

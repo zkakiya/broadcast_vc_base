@@ -101,12 +101,17 @@ body {
     /* これを追加！ */
     transform: scale(var(--scale, 1));
     /* デフォルト1倍 */
+    transform-origin: center center;
 }
 
 /* アクティブ話者だけ不透明 */
 .deck-avatar.active {
     opacity: 1;
     filter: none;
+}
+
+.deck-avatar.dimmed {
+    filter: grayscale(100%) saturate(0.3) brightness(0.75) contrast(0.95);
 }
 
 /* 位置（最小の雛形）。slot=0,1,2... で縦に並べる */

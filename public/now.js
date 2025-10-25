@@ -1,12 +1,22 @@
 (() => {
-  const socket = io();
+  // ---- 安全ログヘルパー ----
+  const log = (...a) => console.log('[now]', ...a);
+  const warn = (...a) => console.warn('[now]', ...a);
+  const err = (...a) => console.error('[now]', ...a);
+
+  // ---- DOM 取得（ガード付き）----
   const nowEl = document.getElementById('now');
   const deck = document.getElementById('avatars');
-  if (deck) deck.classList.add('avatar-deck');
+  if (!nowEl) { err('missing #now element'); return; }
+  if (!deck) { warn('missing #avatars element (avatars will not render)'); }
 
+  // ---- Socket 接続（存在チェック）----
+  if (typeof io !== 'function') { err('socket.io client "io" not found'); return; }
+  const socket = io();
+  socket.on('connect', () => log('socket connected', socket.id));
+
+  // ---- クエリ & CSS 反映 ----
   const q = new URLSearchParams(location.search);
-
-  // ===== 表示サイズ系（既存互換） =====
   const font = Number(q.get('font') || 36);
   // const deckSize = Number(q.get('pfpsize') || 72);
   // const inactive = Number(q.get('inactive') || 0.35);
@@ -16,7 +26,7 @@
   // ===== 固定配置マップ（ここを編集して好きな位置へ） =====
   // 単位は「画面に対する％」。center基準（JSで -50% translate 済み）
   // scale は任意（1.0標準）。src を指定すれば payload の avatar/icon より優先。
-  const POSITION_CONFIG = {
+  const POSITION_CONFIG = window.POSITION_CONFIG || {
     // 例:
     // '272380840434991104': { x: 14,  y: 78, scale: 1.1, src: '/avatars/kakiya_still.png' },
     // '123456789012345678': { x: 86,  y: 22, scale: 1.0, src: '/avatars/yoneda_still.png' },
@@ -53,22 +63,24 @@
     },
   };
 
-  // ===== スピーカーのDOMレジストリ =====
-  // userId -> { el, name, color, pos, lastActiveTimer }
-  const speakers = new Map();
 
-  // フォールバック用に自動配置（設定が無い人向け：左右に積む）
+  // ---- 内部状態 ----
+  const asId = v => String(v);
+  const speakers = new Map(); // id -> { el, name, color, pos }
+  let currentActiveId = null;
+
+  // ---- 自動配置（POSITION_CONFIGに無い人用）----
   const autoNext = { left: 0, right: 0 };
   function autoPosition(side = 'left') {
     const slot = autoNext[side]++;
-    const col = side === 'right' ? 85 : 15; // x[%]
-    const row = 20 + slot * 18;             // y[%]
+    const col = side === 'right' ? 85 : 15; // x %
+    const row = 20 + slot * 18;             // y %
     return { x: col, y: Math.min(row, 85), scale: 1 };
   }
 
-  // 固定アバターを用意 or 取得
+  // ---- アバターDOM生成（必要時のみ）----
   function ensureDeckAvatar(e) {
-    const id = String(e.userId);
+    const id = asId(e.userId);
     let rec = speakers.get(id);
     if (rec) return rec;
 
@@ -79,8 +91,10 @@
     // 画像ソースは config.src > payload.icon > payload.avatar の順
     const src = (cfg && cfg.src) || e.icon || e.avatar || '';
 
+    if (!deck) return null; // デッキが無いならスキップ
+
     const el = document.createElement('img');
-    el.className = 'deck-avatar';
+    el.className = 'deck-avatar dimmed'; // 初期は非アクティブ風
     el.src = src;
     el.alt = (e.name || cfg?.name || 'speaker');
     el.decoding = 'async';
@@ -95,52 +109,59 @@
       el.dataset.mask = '1';
       el.style.setProperty('--mask-image', `url('${cfg.mask}')`);
     }
+    // クリップ（任意）
     if (cfg?.clip) {
       el.dataset.clip = '1';
       el.style.setProperty('--clip-path', cfg.clip);
     }
 
-    deck?.appendChild(el);
+    deck.appendChild(el);
 
     rec = {
       el,
-      name: e.name || cfg?.name,
-      color: e.color || cfg?.color,
+      name: e.name || cfg?.name || '',
+      color: e.color || cfg?.color || '',
       pos,
-      lastActiveTimer: null
     };
     speakers.set(id, rec);
     return rec;
   }
 
-  // active の切替（他はinactiveへ）
-  const ACTIVE_COOLDOWN_MS = Number(q.get('active_ms') || 1200); // 発話後に戻す時間
+  // ---- ハイライト制御（最新発言が表示されている間は維持）----
   function setActive(userId) {
-    const id = String(userId);
-
-    // 全員 inactive
-    for (const [, rec] of speakers) {
-      rec.el.classList.remove('active', 'pulse');
-      if (rec.lastActiveTimer) { clearTimeout(rec.lastActiveTimer); rec.lastActiveTimer = null; }
+    const id = asId(userId);
+    // まず全員 dimmed
+    for (const [, r] of speakers) {
+      r.el.classList.remove('active', 'pulse');
+      r.el.classList.add('dimmed');
     }
-    // 対象を active
-    const rec = speakers.get(id);
-    if (!rec) return;
-
-    rec.el.classList.add('active', 'pulse');
-    rec.lastActiveTimer = setTimeout(() => {
-      rec.el.classList.remove('active', 'pulse');
-    }, ACTIVE_COOLDOWN_MS);
+    // 対象だけ active
+    let r = speakers.get(id);
+    if (!r) {
+      r = ensureDeckAvatar({ userId: id, side: 'left' });
+    }
+    if (r) {
+      r.el.classList.remove('dimmed');
+      r.el.classList.add('active', 'pulse');
+      currentActiveId = id;
+    }
   }
 
+  // ---- 最新バブル描画（安全実装）----
   function renderBubble(e) {
-    nowEl.className = `bubble ${e.side || 'left'}`;
+    const id = asId(e.userId);
+    const cfg = POSITION_CONFIG[id] || {};
+    const displayName = e.name || cfg.name || '';
+    const displaySide = e.side || cfg.side || 'left';
+    const displayColor = e.color || cfg.color || '';
+
+    nowEl.className = `bubble ${displaySide}`;
     nowEl.innerHTML = '';
 
     const name = document.createElement('div');
     name.className = 'name';
-    name.textContent = e.name || '';
-    if (e.color) name.style.color = e.color;
+    name.textContent = displayName;
+    if (displayColor) name.style.color = displayColor;
 
     const text = document.createElement('div');
     text.className = 'text';
@@ -158,43 +179,93 @@
     }
   }
 
-  // フェード（既存の仕組みを維持）
+  // ---- フェード（フェード開始で強調解除）----
   const fadeSec = Number(q.get('fade') || 30);
   let fadeTimer = null;
   function startFadeTimer() {
     if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null; }
     nowEl.classList.remove('is-fading');
     if (fadeSec > 0) {
-      fadeTimer = setTimeout(() => nowEl.classList.add('is-fading'), fadeSec * 1000);
+      fadeTimer = setTimeout(() => {
+        nowEl.classList.add('is-fading');
+        if (currentActiveId && speakers.has(currentActiveId)) {
+          const r = speakers.get(currentActiveId);
+          r.el.classList.remove('active', 'pulse');
+          r.el.classList.add('dimmed');
+          currentActiveId = null;
+        }
+      }, fadeSec * 1000);
     }
   }
 
-  // now.js の初期化末尾あたりに追加
+  // ---- 初期表示（全員出す）----
   function preloadDeck() {
-    // クエリでサイズ/不透明度を反映しているなら既存処理のままでOK
-    Object.entries(POSITION_CONFIG).forEach(([userId, cfg]) => {
+    if (!deck) return;
+    Object.entries(POSITION_CONFIG).forEach(([uid, cfg]) => {
       ensureDeckAvatar({
-        userId,
+        userId: asId(uid),
         name: cfg.name,
         side: cfg.side,
         color: cfg.color,
-        avatar: cfg.src, // 画像
-        icon: cfg.src,   // どちらでも表示できるように
-        text: '',        // 初期は空
+        avatar: cfg.src,
+        icon: cfg.src,
       });
     });
   }
   preloadDeck();
 
+  // ---- 受信ハンドラ ----
   socket.on('transcript', (payload) => {
-    // 1) 固定アバター確保＆配置
-    ensureDeckAvatar(payload);
-    // 2) 発話者を強調
-    setActive(payload.userId);
-    // 3) 最新バブル
-    renderBubble(payload);
-    // 4) フェード
-    startFadeTimer();
+    try {
+      const id = asId(payload.userId);
+      // 1) アバター準備
+      ensureDeckAvatar({ ...payload, userId: id });
+      // 2) ハイライト
+      setActive(id);
+      // 3) バブル
+      renderBubble({ ...payload, userId: id });
+      // 4) フェード管理
+      startFadeTimer();
+    } catch (e) {
+      err('render failed:', e);
+    }
   });
 
+  // 後追いの翻訳だけ受け取る（表示は維持）
+  socket.on('transcript_update', (upd) => {
+    try {
+      if (!upd?.tr?.text) return;
+      // 既存バブルに翻訳行を足す（作り直さない）
+      const tr = document.createElement('div');
+      tr.className = 'tr';
+      tr.textContent = upd.tr.text;
+      nowEl.appendChild(tr);
+      // フェードタイマーは延長しない（好みで startFadeTimer() を呼んでもOK）
+    } catch (e) {
+      console.error('[now] update failed:', e);
+    }
+  });
+
+  // ---- デバッグAPI（URLに ?demo=1 を付けると発火）----
+  if (q.get('demo') === '1') {
+    setInterval(() => {
+      const ids = Object.keys(POSITION_CONFIG);
+      const pick = ids[Math.floor(Math.random() * ids.length)] || 'debug';
+      const cfg = POSITION_CONFIG[pick] || { name: 'Debug', side: 'left', color: '#fff' };
+      const demo = {
+        userId: asId(pick),
+        name: cfg.name || 'Debug',
+        side: cfg.side || 'left',
+        color: cfg.color || '#fff',
+        text: 'demo lorem ipsum ' + Math.random().toString(36).slice(2, 7),
+        ts: Date.now(),
+      };
+      socket.emit && log('demo emit local'); // ログ
+      // ローカルで直接処理（サーバを経由しないデモ）
+      ensureDeckAvatar(demo);
+      setActive(demo.userId);
+      renderBubble(demo);
+      startFadeTimer();
+    }, 2000);
+  }
 })();

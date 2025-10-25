@@ -28,13 +28,17 @@ try {
 
 setIo(io);
 
- // v14 互換 + v15 以降の先取り
- const onClientReady = async () => {
-   console.log(`✅ Logged in as ${client.user.tag}`);
-   await joinAndRecordVC();
- };
-// v14（ready）と v15（clientReady）の両対応
-['clientReady', 'ready'].forEach(ev => client.once(ev, onClientReady));
+// v14 互換 + v15 以降の先取り
+let bootstrapped = false;
+const onClientReady = async () => {
+  if (bootstrapped) return;          // ✅ 二重起動ガード
+  bootstrapped = true;
+  console.log(`✅ Logged in as ${client.user.tag}`);
+  await joinAndRecordVC();
+};
+// v14（ready）/ v15（clientReady）両対応だが、どちらが来ても1回しか走らない
+client.once('clientReady', onClientReady);
+client.once('ready', onClientReady);
 
 // 念のため、未ハンドルの error を握る（クラッシュ防止）
 client.on('error', (err) => console.error('[client] error:', err));
