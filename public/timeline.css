@@ -59,13 +59,11 @@ body {
     border-radius: var(--radius);
     padding: 0.25rem 0;
     max-width: 100%;
-    text-align: right;
 }
 
 .name {
     font-weight: 700;
     margin-bottom: 4px;
-    text-align: right;
 }
 
 .text {
@@ -76,4 +74,14 @@ body {
 .tr {
     margin-top: 6px;
     opacity: .9
+}
+
+.entry.side-left .bubble,
+.entry.side-left .name {
+    text-align: left;
+}
+
+.entry.side-right .bubble,
+.entry.side-right .name {
+    text-align: right;
 }
