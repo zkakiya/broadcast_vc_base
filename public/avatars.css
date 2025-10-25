@@ -1,0 +1,9 @@
+/* /public/avatars.css */
+:root { --fade-ms: 30000; }
+html, body { margin: 0; padding: 0; background: transparent; overflow: hidden; font-family: system-ui, -apple-system, Segoe UI, Roboto, "Noto Sans JP", sans-serif; }
+.stage { position: relative; width: 100vw; height: 100vh; }
+.avatar { position: absolute; transform-origin: top left; opacity: 1; transition: filter .35s ease, transform .2s ease; filter: brightness(0.45) contrast(0.95); }
+.avatar.active { filter: none; }
+.avatar .img { width: 180px; height: 180px; border-radius: 50%; overflow: hidden; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
+.avatar .img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.avatar .label { margin-top: 8px; text-align: center; color: #fff; text-shadow: 0 2px 4px rgba(0,0,0,.6); font-weight: 600; }

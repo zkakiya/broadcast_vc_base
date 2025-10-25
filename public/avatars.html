@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ja">
+
+<head>
+  <meta charset="utf-8" />
+  <title>Avatars View</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/now.css">
+  <script>
+    // now.js にモードを伝える
+    window.VIEW_MODE = 'avatars';
+  </script>
+</head>
+
+<body data-view="avatars">
+  <div id="safe-area">
+    <div id="avatars" aria-hidden="false"></div>
+    <!-- 吹き出しは非表示 -->
+    <div id="now" class="bubble" style="display:none"></div>
+  </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="/now.js"></script>
+</body>
+
+</html>

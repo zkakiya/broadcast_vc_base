@@ -1,4 +1,10 @@
 (() => {
+  // ==== View Mode 分岐設定 ====
+  const VIEW_MODE = (window.VIEW_MODE || 'both').toLowerCase();
+  const SHOW_AVATARS = VIEW_MODE === 'both' || VIEW_MODE === 'avatars';
+  const SHOW_LATEST = VIEW_MODE === 'both' || VIEW_MODE === 'latest';
+  document.body?.setAttribute('data-view', VIEW_MODE);
+
   // ---- 安全ログヘルパー ----
   const log = (...a) => console.log('[now]', ...a);
   const warn = (...a) => console.warn('[now]', ...a);
@@ -157,6 +163,22 @@
 
     nowEl.className = `bubble ${displaySide}`;
     nowEl.innerHTML = '';
+    // ★ 尻尾アンカー（%）。POSITION_CONFIG の x(%) をそのまま使うのが簡単。
+    //   もし吹き出しを中央に寄せるなら、固定値（例: 左12%/右88%）でもOK。
+    if (typeof cfg.x === 'number') {
+      // 画面 % 基準のまま使う（now は full-width なので自然に揃う）
+      nowEl.style.setProperty('--tail-x', `${cfg.x}%`);
+    } else {
+      // フォールバック（左:12% / 右:88%）
+      nowEl.style.setProperty('--tail-x', displaySide === 'right' ? '88%' : '12%');
+    }
+
+    // ★ テーマ（任意）：POSITION_CONFIG に theme を持たせると切替可能
+    if (cfg.theme) {
+      nowEl.setAttribute('data-theme', cfg.theme);
+    } else {
+      nowEl.removeAttribute('data-theme');
+    }
 
     const name = document.createElement('div');
     name.className = 'name';
@@ -218,13 +240,14 @@
   socket.on('transcript', (payload) => {
     try {
       const id = asId(payload.userId);
-      // 1) アバター準備
-      ensureDeckAvatar({ ...payload, userId: id });
-      // 2) ハイライト
-      setActive(id);
-      // 3) バブル
-      renderBubble({ ...payload, userId: id });
-      // 4) フェード管理
+      if (SHOW_AVATARS) {
+        ensureDeckAvatar({ ...payload, userId: id });
+        setActive(id);
+      }
+      if (SHOW_LATEST) {
+        renderBubble({ ...payload, userId: id });
+      }
+      // フェード解除（待機復帰）は両画面で共通に動かす
       startFadeTimer();
     } catch (e) {
       err('render failed:', e);

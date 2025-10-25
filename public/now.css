@@ -30,6 +30,10 @@ body {
     line-height: 1.2;
 }
 
+body[data-view="latest"] {
+    --bubble: rgba(0, 0, 0, .65)
+}
+
 #safe-area {
     box-sizing: border-box;
     display: flex;
@@ -77,6 +81,16 @@ body {
     margin-top: 6px;
     opacity: .9
 }
+
+/* 最新発言 */
+#now {
+    bottom: var(--pad);
+    position: fixed;
+    left: var(--pad);
+    right: var(--pad);
+    width: auto;
+}
+
 
 /* ★ アバターデッキ（固定表示） */
 #avatars {
@@ -163,3 +177,63 @@ body {
     outline: 3px solid rgba(255, 255, 255, .7);
     outline-offset: 2px;
 }
+
+/* ==== View Mode visibility === */
+[data-view="avatars"] #now {
+    display: none !important;
+}
+
+[data-view="latest"] #avatars {
+    display: none !important;
+}
+
+/* ==== Bubble tail / theme ===================================== */
+.bubble {
+    position: relative;
+}
+
+/* 尻尾サイズ（px）と左右のアンカー（%）は JS からも上書き可 */
+.bubble {
+    --tail-size: 14px;
+    --tail-x: 12%;
+}
+
+/* デフォルトは下辺に三角を出す（背景は --bubble を参照） */
+.bubble::after {
+    content: "";
+    position: absolute;
+    width: 0;
+    height: 0;
+    border: var(--tail-size) solid transparent;
+    bottom: 100%;
+    /* バブル下辺 */
+}
+
+/* 左話者：左寄り（--tail-x% の位置）に尻尾 */
+.bubble.left::after {
+    left: clamp(12px, var(--tail-x), 45%);
+    border-bottom-color: var(--bubble);
+    border-top: 0;
+}
+
+/* 右話者：右寄り（--tail-x% を右からの距離に換算）に尻尾 */
+.bubble.right::after {
+    right: clamp(12px, calc(100% - var(--tail-x)), 45%);
+    border-bottom-color: var(--bubble);
+    border-top: 0;
+}
+
+/* ---- テーマ（例）: 話者により背景・縁取りを変えたい場合 ---- */
+.bubble[data-theme="gold"] {
+    --bubble: rgba(24, 22, 18, .78);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .45), 0 0 0 2px rgba(170, 133, 85, .75) inset;
+}
+
+.bubble[data-theme="blue"] {
+    --bubble: rgba(15, 22, 40, .78);
+    box-shadow: 0 12px 40px rgba(0, 0, 0, .45), 0 0 0 2px rgba(85, 117, 221, .75) inset;
+}
+
+/* 既存の --bubble が transparent のままだと尻尾が見えないので、
+   尻尾を出す画面（latest.html）では --bubble を不透明寄りにしてください。
+   例: body[data-view="latest"] { --bubble: rgba(0,0,0,.65); } */

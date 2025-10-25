@@ -5,6 +5,9 @@ import path from 'path';
 import { execFile } from 'child_process';
 import util from 'util';
 
+import { spawn } from 'node:child_process';
+
+
 const execFileAsync = util.promisify(execFile);
 
 // ★ Whisper の Python 実行ファイル（環境に合わせて変更可）
@@ -45,6 +48,13 @@ export async function transcribeAudioGPU(filePath) {
 
   const args = BASE_ARGS(filePath, outDir);
 
+  const env = { ...process.env, WHISPER_DEVICE: process.env.WHISPER_DEVICE || 'cuda' };
+  const py = spawn('python3', ['whisper_runner.py', wavPath], { env });
+
+  py.stderr.on('data', (d) => console.error(String(d).trim())); // ← deviceログが見える
+  py.stdout.on('data', (d) => {/* ...recognized text... */ });
+
+
   // 1) GPU (cuda)
   try {
     await execFileAsync(WHISPER_PY, [...args, '--device', 'cuda']);
@@ -65,7 +75,7 @@ export async function transcribeAudioGPU(filePath) {
   const segs = Array.isArray(j?.segments) ? j.segments : [];
 
   const MIN_AVG_LOGPROB = Number(process.env.WHISPER_MIN_AVG_LOGPROB ?? -1.0);   // これ未満は捨て
-  const MAX_NO_SPEECH   = Number(process.env.WHISPER_MAX_NO_SPEECH ?? 0.60);    // これ超えは捨て
+  const MAX_NO_SPEECH = Number(process.env.WHISPER_MAX_NO_SPEECH ?? 0.60);    // これ超えは捨て
 
   const kept = [];
   for (const s of segs) {
@@ -94,6 +104,6 @@ export async function transcribeAudioGPU(filePath) {
   }
 
   // 後片付け
-  try { fs.unlinkSync(jsonPath); } catch {}
+  try { fs.unlinkSync(jsonPath); } catch { }
   return text || null;
 }

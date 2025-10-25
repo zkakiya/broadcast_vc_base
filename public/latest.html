@@ -1,19 +1,20 @@
 <!doctype html>
-<html>
+<html lang="ja">
 
 <head>
   <meta charset="utf-8" />
-  <title>Now — Subtitles</title>
+  <title>Latest Bubble View</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="/now.css">
+  <script>
+    window.VIEW_MODE = 'latest';
+  </script>
 </head>
 
-<body>
+<body data-view="latest">
   <div id="safe-area">
-    <!-- ★ 固定アバター群 -->
-    <div id="avatars" aria-hidden="true"></div>
-
-    <!-- 最新発言のみ -->
+    <!-- アバターは非表示 -->
+    <div id="avatars" style="display:none"></div>
     <div id="now" class="bubble is-fading"></div>
   </div>
   <script src="/socket.io/socket.io.js"></script>
