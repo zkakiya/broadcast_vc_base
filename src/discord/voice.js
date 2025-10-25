@@ -81,8 +81,9 @@ export async function joinAndRecordVC() {
       connection.on('error', (err) => {
         console.error('[voice] connection error:', err?.message || err);
       });
+      const VOICE_DEBUG = process.env.VOICE_DEBUG === '1';
       connection.on('stateChange', (oldS, newS) => {
-        console.log(`[voice] state ${oldS.status} -> ${newS.status}`);
+        if (VOICE_DEBUG) console.log(`[voice] state ${oldS.status} -> ${newS.status}`);
       });
 
       // 準備完了を余裕をもって待つ

@@ -2,7 +2,8 @@
   "name": "discord-whisper-transcriber",
   "type": "module",
   "scripts": {
-    "start": "node src/index.js"
+    "dev": "NODE_ENV=development node src/index.js",
+    "start": "NODE_ENV=production node src/index.js"
   },
   "dependencies": {
     "@discordjs/opus": "^0.10.0",
