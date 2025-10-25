@@ -32,7 +32,7 @@
     // '123456789012345678': { x: 86,  y: 22, scale: 1.0, src: '/avatars/yoneda_still.png' },
     // '999999999999999999': { x: 50,  y: 50, scale: 1.2, src: '/avatars/haracternick_still.png' },
     '272380840434991104': {
-      x: 70,
+      x: 78,
       y: 41,
       scale: 1.0,
       src: '/avatars/kakiya_still.png',
@@ -41,7 +41,7 @@
       side: 'right',               // バブル左右
       color: 'rgba(170, 133, 85, 1)',              // 名前色（任意）
     },
-    '123456789012345678': {
+    '463714335596740638': {
       x: -10,
       y: 5,
       scale: 1.05,
@@ -51,8 +51,8 @@
       side: 'left',
       color: '#d85',
     },
-    '999999999999999999': {
-      x: -15,
+    '682709913335890031': {
+      x: -20,
       y: 35,
       scale: 1.1,
       src: '/avatars/haracternick_still.png',
