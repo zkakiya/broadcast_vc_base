@@ -21,6 +21,10 @@ import { getSpeaker } from '../registry/speakers.js';
 import { CONFIG } from '../config.js';
 import { translateText } from '../utils/translate.js';
 
+// ── VC接続ハンドル（モジュールスコープ） ────────────────────────
+let currentConnection = null;
+let isReconnecting = false; // 多重再接続ガード
+
 // --- 翻訳ユーティリティ（OpenAI優先 / 最小実装） -----------------
 const TRANSLATE_ENABLED = process.env.TRANSLATE_ENABLED === '1';
 const TRANSLATE_TARGET_DEFAULT = process.env.TRANSLATE_TARGET_DEFAULT || ''; // 空なら後述の自動判定
@@ -45,7 +49,18 @@ function enqueue(task) {
   return last;
 }
 
-let currentConnection = null; // 追加：現在の接続を保持
+// ── 再接続ポリシー（環境変数で上書き可） ─────────────────────────
+const VOICE_RETRY_MAX = Number(process.env.VOICE_RETRY_MAX ?? 5);                // 最大試行
+const VOICE_RETRY_INITIAL_MS = Number(process.env.VOICE_RETRY_INITIAL_MS ?? 1500); // 初回遅延
+const VOICE_RETRY_MAX_MS = Number(process.env.VOICE_RETRY_MAX_MS ?? 30000);        // 遅延上限
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+function backoffDelay(attempt, baseMs, maxMs) {
+  // 2^n の指数バックオフにフルジッター（0..delay/2）を加算して衝突緩和
+  const pure = Math.min(baseMs * Math.pow(2, attempt - 1), maxMs);
+  const jitter = Math.floor(Math.random() * Math.max(1, Math.floor(pure / 2)));
+  return Math.min(pure + jitter, maxMs);
+}
 
 export async function joinAndRecordVC() {
   const guild = await client.guilds.fetch(GUILD_ID);
@@ -60,8 +75,8 @@ export async function joinAndRecordVC() {
   }
 
   let attempt = 0;
-  const maxAttempts = 4;
-  const baseDelay = 1500;
+  const maxAttempts = VOICE_RETRY_MAX;
+  const baseDelay = VOICE_RETRY_INITIAL_MS;
   let connection;
 
   while (attempt < maxAttempts) {
@@ -82,10 +97,43 @@ export async function joinAndRecordVC() {
         console.error('[voice] connection error:', err?.message || err);
       });
       const VOICE_DEBUG = process.env.VOICE_DEBUG === '1';
-      connection.on('stateChange', (oldS, newS) => {
+      connection.on('stateChange', async (oldS, newS) => {
         if (VOICE_DEBUG) console.log(`[voice] state ${oldS.status} -> ${newS.status}`);
-      });
 
+        // 切断 → クイック再接続を試み、失敗時は指数バックオフ付きで再入室
+        if (newS.status === VoiceConnectionStatus.Disconnected && !isReconnecting) {
+          isReconnecting = true;
+          console.warn('[voice] Disconnected — quick reconnect trial');
+          try {
+            // “現在のコネクション”での素早い復帰（5秒以内）
+            await entersState(connection, VoiceConnectionStatus.Signalling, 5_000);
+            await entersState(connection, VoiceConnectionStatus.Connecting, 5_000);
+            console.info('[voice] Quick reconnect succeeded');
+            isReconnecting = false;
+            return;
+          } catch {
+            console.warn('[voice] Quick reconnect failed — fallback to backoff');
+          }
+
+          // いったん破棄してクリーンに再入室（指数バックオフ）
+          try { currentConnection?.destroy(); } catch { }
+          currentConnection = null;
+          let ok = false;
+          for (let i = 1; i <= VOICE_RETRY_MAX; i++) {
+            try {
+              await sleep(backoffDelay(i, VOICE_RETRY_INITIAL_MS, VOICE_RETRY_MAX_MS));
+              await joinAndRecordVC(); // 自身を呼び出し直して受信系も再構築
+              console.info('[voice] Reconnected via backoff');
+              ok = true;
+              break;
+            } catch (e) {
+              console.warn(`[voice] backoff reconnect ${i}/${VOICE_RETRY_MAX} failed:`, e?.message || e);
+            }
+          }
+          if (!ok) console.error('[voice] Reconnect failed after retries');
+          isReconnecting = false;
+        }
+      });
       // 準備完了を余裕をもって待つ
       await entersState(connection, VoiceConnectionStatus.Ready, 60_000);
       console.log('🎧 Voice connection ready');
@@ -94,8 +142,8 @@ export async function joinAndRecordVC() {
       console.warn(`[voice] join attempt ${attempt} failed:`, e?.code || e?.message || e);
       try { connection?.destroy(); } catch { }
       if (attempt >= maxAttempts) throw e;
-      const wait = baseDelay * Math.pow(2, attempt - 1); // 1.5s, 3s, 6s...
-      await new Promise(r => setTimeout(r, wait));
+      const wait = backoffDelay(attempt, baseDelay, VOICE_RETRY_MAX_MS);
+      await sleep(wait);
       continue; // リトライ
     }
   }

@@ -38,7 +38,6 @@ const onClientReady = async () => {
 };
 // v14（ready）/ v15（clientReady）両対応だが、どちらが来ても1回しか走らない
 client.once('clientReady', onClientReady);
-client.once('ready', onClientReady);
 
 // 念のため、未ハンドルの error を握る（クラッシュ防止）
 client.on('error', (err) => console.error('[client] error:', err));
