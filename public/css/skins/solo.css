@@ -1,0 +1,24 @@
+:root {
+    --avatar-size: 56px;
+    --bg: radial-gradient(1000px 500px at 70% 10%, #121421 0%, #0a0b10 60%, #07080d 100%);
+    --bubble: rgba(15, 16, 24, .92);
+    --bubble-border: rgba(54, 162, 255, .35);
+    --name: #BFE1FF;
+    --radius: 22px;
+    --shadow: 0 10px 36px rgba(0, 20, 60, .45);
+    --tail-size: 10px;
+    --tr-accent: rgba(54, 162, 255, .45);
+}
+
+.bubble {
+    font-size: 1.08rem;
+    max-width: min(86%, 980px);
+}
+
+.entry img.pfp {
+    border-color: rgba(54, 162, 255, .5);
+    border-radius: 18%;
+    box-shadow:
+        0 0 0 2px rgba(54, 162, 255, .25),
+        0 8px 24px rgba(0, 0, 0, .45);
+}

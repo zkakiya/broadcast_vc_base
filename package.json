@@ -3,13 +3,16 @@
   "type": "module",
   "scripts": {
     "dev": "NODE_ENV=development node src/index.js",
-    "start": "NODE_ENV=production node src/index.js"
+    "start": "NODE_ENV=production node src/index.js",
+    "dev:multi": "dotenv -e apps/.env.shared -e apps/.env.multi -- node src/index.js",
+    "dev:solo": "dotenv -e apps/.env.shared -e apps/.env.solo  -- node src/index.js"
   },
   "dependencies": {
     "@discordjs/opus": "^0.10.0",
     "@discordjs/voice": "^0.17.0",
     "discord.js": "^14.23.2",
     "dotenv": "^16.6.1",
+    "dotenv-cli": "^7.4.1",
     "express": "^4.21.2",
     "libsodium-wrappers": "^0.7.15",
     "node-wav": "^0.0.2",

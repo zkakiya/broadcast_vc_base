@@ -1,0 +1,16 @@
+:root {
+    --bg: #0b0c12;
+    --bubble: rgba(22, 22, 28, .92);
+    --bubble-border: rgba(110, 135, 255, .25);
+    --name: #C9D4FF;
+    --radius: 18px;
+    --shadow: 0 8px 28px rgba(20, 30, 80, .35);
+    --tr-accent: rgba(110, 135, 255, .35);
+}
+
+.entry img.pfp {
+    border-radius: 50%;
+    box-shadow:
+        0 0 0 2px rgba(110, 135, 255, .15),
+        0 4px 16px rgba(0, 0, 0, .35);
+}
