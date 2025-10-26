@@ -28,6 +28,15 @@ try {
 
 setIo(io);
 
+
+// ソロ起動時
+if (process.env.MODE === 'solo') {
+  const { setIo } = await import('./solo/recorder.js');
+  setIo(io);
+  const { startSoloRecorder } = await import('./solo/recorder.js');
+  startSoloRecorder();
+}
+
 // v14 互換 + v15 以降の先取り
 let bootstrapped = false;
 const onClientReady = async () => {
