@@ -46,12 +46,105 @@ const SEG_MIN_SAMPLES = samplesFromMs(SEG_MIN_MS);
 const SEG_MAX_SAMPLES = samplesFromMs(SEG_MAX_MS);
 
 // 直列実行（Whisper負荷平準化）
-let last = Promise.resolve();
-function enqueue(task) {
-    last = last.then(() => task()).catch(() => { }).finally(() => { });
-    return last;
+// ── 処理キュー：溜まったら「まとめる」＆「古いの捨てる」 ─────────────────
+const RT_MAX_QUEUE = Number(process.env.RT_MAX_QUEUE || 3);
+const RT_COALESCE_MS = Number(process.env.RT_COALESCE_MS || 3500);
+let running = false;
+const q = []; // { wavPath, durMs }
+function queueLen() { return q.length + (running ? 1 : 0); }
+async function pump() {
+    if (running) return;
+    running = true;
+    try {
+        while (q.length) {
+            // --- coalesce: できる限り結合して1回で回す ---
+            let bundle = [q.shift()];
+            let totalMs = bundle[0].durMs;
+            while (q.length && (totalMs + q[0].durMs) <= RT_COALESCE_MS) {
+                bundle.push(q.shift());
+                totalMs += bundle[bundle.length - 1].durMs;
+            }
+
+            // 複数あるなら一時WAVにマージして1本化
+            let usePath = bundle[0].wavPath;
+            if (bundle.length > 1) {
+                const merged = path.join(recDir, `solo-merge-${nowTs()}.wav`);
+                try {
+                    await concatWavs(bundle.map(b => b.wavPath), merged);
+                    // 元を削除（少し遅延させてI/O競合を避ける）
+                    setTimeout(() => {
+                        for (const b of bundle) { try { fs.unlinkSync(b.wavPath); } catch { } }
+                    }, 300);
+                    usePath = merged;
+                } catch (e) {
+                    if (e && e.code === 'EMPTY_MERGE') {
+                        // 何も書けなかった。元ファイルはすでに消して良い。
+                        setTimeout(() => {
+                            for (const b of bundle) { try { fs.unlinkSync(b.wavPath); } catch { } }
+                        }, 300);
+                        continue; // この束は捨てて次へ
+                    }
+                    // それ以外のエラーはログって次へ
+                    console.warn('[solo/realtime] merge failed:', e.message || e);
+                    continue;
+                }
+            }
+
+            const text = await transcribeAudioGPU(usePath);
+            try { fs.unlinkSync(usePath); } catch { }
+            if (text && text.trim()) emitTranscript(text.trim());
+        }
+    } finally {
+        running = false;
+    }
+}
+function pushTask(wavPath, durMs) {
+    // キューが長い時は古いのを捨て、最新だけを残す（直近を優先）
+    while (q.length >= RT_MAX_QUEUE) {
+        const drop = q.shift();
+        try { fs.unlinkSync(drop.wavPath); } catch { }
+    }
+    q.push({ wavPath, durMs });
+    pump();
 }
 
+// 複数WAVを単純連結（同一fmt前提: 16k/mono/s16）
+async function concatWavs(paths, outPath) {
+    return new Promise((resolve, reject) => {
+        const writer = new wav.FileWriter(outPath, { sampleRate: SR, channels: CH });
+        let wrote = false;
+        (async () => {
+            try {
+                let anyInput = false;
+                for (const p of paths) {
+                    anyInput = true;
+                    try {
+                        if (!fs.existsSync(p)) continue;
+                        const buf = fs.readFileSync(p);
+                        if (buf.length > 44) {
+                            writer.write(buf.subarray(44)); // データ部のみ
+                            wrote = true;
+                        }
+                    } catch (e) {
+                        console.warn('[solo/realtime] concat skip:', p, e.message);
+                    }
+                }
+                writer.end(() => {
+                    if (!anyInput || !wrote) {
+                        try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { }
+                        const err = new Error('EMPTY_MERGE');
+                        err.code = 'EMPTY_MERGE';
+                        return reject(err);
+                    }
+                    resolve();
+                });
+            } catch (e) {
+                try { if (fs.existsSync(outPath)) fs.unlinkSync(outPath); } catch { }
+                reject(e);
+            }
+        })();
+    });
+}
 function emitTranscript(text) {
     if (!text || !ioRef) return;
     const id = `${SOLO.userId}-${nowTs()}`;
@@ -184,13 +277,9 @@ class Segmenter {
 
             const wavPath = path.join(recDir, `solo-${nowTs()}.wav`);
             await writeWav(seg, wavPath);
-
-            // Whisper 直列実行
-            await enqueue(async () => {
-                const text = await transcribeAudioGPU(wavPath);
-                try { fs.unlinkSync(wavPath); } catch { }
-                if (text && text.trim()) emitTranscript(text.trim());
-            });
+            const durMs = Math.round(seg.length / SR * 1000);
+            // キューに投入（必要なら coalesce / drop される）
+            pushTask(wavPath, durMs);
         } catch (e) {
             console.warn('[solo/realtime] flush error:', e?.message || e);
         }

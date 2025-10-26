@@ -63,6 +63,10 @@ function backoffDelay(attempt, baseMs, maxMs) {
 }
 
 export async function joinAndRecordVC() {
+  // v15 以降: clientReady を待つ（保険）
+  if (!client.user) {
+    await new Promise(res => client.once('clientReady', res));
+  }
   const guild = await client.guilds.fetch(GUILD_ID);
   if (!guild) throw new Error('Guild not found');
 
@@ -88,6 +92,8 @@ export async function joinAndRecordVC() {
         adapterCreator: guild.voiceAdapterCreator,
         selfDeaf: false,
         selfMute: false,
+        // 互換モード優先度（対応していればこれが選ばれる）
+        preferredEncryptionMode: 'aead_xchacha20_poly1305_rtpsize',
       });
 
       currentConnection = connection; // ここで保持

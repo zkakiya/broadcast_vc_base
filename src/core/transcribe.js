@@ -6,6 +6,13 @@ import path from 'path';
 import { execFile, execFileSync } from 'child_process';
 import util from 'util';
 
+// 実装切替: faster / whisper
+const IMPL = (process.env.WHISPER_IMPL || 'whisper').toLowerCase();
+const FW_PY = process.env.WHISPER_PY || '/home/z_kakiya/whisper-venv/bin/python';
+const FW_RUNNER = path.join(process.cwd(), 'src/core/fw_runner.py');
+const FW_DEVICE = process.env.FASTER_WHISPER_DEVICE || 'cuda';        // cuda / cpu
+const FW_COMPUTE = process.env.FW_COMPUTE_TYPE || 'float16';          // float16 / int8_float16 / int8
+
 const execFileAsync = util.promisify(execFile);
 
 // === 1) whisperコマンド解決（PATH/代表パス/環境変数から堅牢に探す） ==========
@@ -189,6 +196,22 @@ function filterSegments(segments) {
   return kept.join('').trim();
 }
 
+async function runFasterWhisper(filePath, outDir) {
+  const base = path.basename(filePath, path.extname(filePath));
+  const jsonPath = path.join(outDir, `${base}.json`);
+  const args = [
+    FW_RUNNER, filePath, jsonPath,
+    '--model', MODEL,
+    '--device', FW_DEVICE,
+    '--compute', FW_COMPUTE,
+    '--lang', 'ja',
+  ];
+  const cmd = FW_PY;
+  if (DEBUG) console.info(`[faster] exec: ${cmd} ${args.join(' ')}`);
+  await execFileAsync(cmd, args, { env: process.env });
+  return jsonPath;
+}
+
 // === 4) メイン ================================================================
 export async function transcribeAudioGPU(filePath) {
   const outDir = path.dirname(filePath);
@@ -197,21 +220,30 @@ export async function transcribeAudioGPU(filePath) {
   // 前回の残骸を掃除
   try { if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath); } catch { }
 
-  // GPU → CPUフォールバック
-  let result;
+  // まず faster-whisper を試し、失敗したら旧CLIへフォールバック
+  let used = 'faster';
   try {
-    console.info(`[whisper] run (cuda)  cmd=${WHISPER_CMD} model=${MODEL}`);
-    result = await runWhisperOnce('cuda', filePath, outDir);
+    if (IMPL === 'faster') {
+      await runFasterWhisper(filePath, outDir);
+    } else {
+      throw new Error('skip_faster');
+    }
   } catch (e) {
-    console.warn('[whisper] cuda failed; fallback to CPU (--fp16 False). err=', e?.message || e);
+    used = 'whisper';
+    let result;
     try {
-      result = await runWhisperOnce('cpu', filePath, outDir);
-    } catch (ee) {
-      console.error('[whisper] cpu fallback also failed:', ee?.message || ee);
-      return null;
+      console.info(`[whisper] run (cuda)  cmd=${WHISPER_CMD} model=${MODEL}`);
+      result = await runWhisperOnce('cuda', filePath, outDir);
+    } catch (e1) {
+      console.warn('[whisper] cuda failed; fallback to CPU (--fp16 False). err=', e1?.message || e1);
+      try {
+        result = await runWhisperOnce('cpu', filePath, outDir);
+      } catch (e2) {
+        console.error('[whisper] cpu fallback also failed:', e2?.message || e2);
+        return null;
+      }
     }
   }
-
   // 取り出し（JSON → stdout → txt）
   let text = null;
 
@@ -264,6 +296,6 @@ export async function transcribeAudioGPU(filePath) {
   }
 
   text = stripClosers(text || '');
-  if (DEBUG) console.info('[whisper] device used:', result?.device, ' / text:', text);
+  if (DEBUG) console.info('[asr] impl:', used, ' / text:', text);
   return text || null;
 }
