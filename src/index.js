@@ -29,12 +29,28 @@ try {
 setIo(io);
 
 
-// ソロ起動時
-if (process.env.MODE === 'solo') {
-  const { setIo } = await import('./solo/recorder.js');
+// モードチェック
+const MODE = (process.env.MODE || 'multi').toLowerCase();
+
+if (MODE === 'multi') {
+  const { setIo } = await import('./discord/voice.js');
   setIo(io);
-  const { startSoloRecorder } = await import('./solo/recorder.js');
-  startSoloRecorder();
+  const { joinAndRecordVC } = await import('./discord/voice.js');
+  joinAndRecordVC().catch(e => console.error('voice join failed', e));
+} else if (MODE === 'solo') {
+  const kind = (process.env.SOLO_MODE || 'realtime').toLowerCase();
+  if (kind === 'realtime') {
+    const { setIo } = await import('./solo/realtime.js');
+    setIo(io);
+    const { startSoloRealtime } = await import('./solo/realtime.js');
+    startSoloRealtime().catch(e => console.error('solo realtime failed', e));
+  } else {
+    // 以前のファイル監視版を使う場合（あれば）
+    const { setIo } = await import('./solo/recorder.js');
+    setIo(io);
+    const { startSoloRecorder } = await import('./solo/recorder.js');
+    startSoloRecorder().catch(e => console.error('solo recorder failed', e));
+  }
 }
 
 // v14 互換 + v15 以降の先取り
