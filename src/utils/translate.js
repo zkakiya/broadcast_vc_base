@@ -11,8 +11,8 @@ export async function translateText({ text, source, target }) {
 
   try {
     if (hasOpenAI) return await translateOpenAI(text, source, target);
-    if (hasDeepL)  return await translateDeepL(text, source, target);
-    if (hasLibre)  return await translateLibre(text, source, target);
+    if (hasDeepL) return await translateDeepL(text, source, target);
+    if (hasLibre) return await translateLibre(text, source, target);
     return null;
   } catch (e) {
     console.warn('[translate] failed:', e?.message || e);

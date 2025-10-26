@@ -5,7 +5,7 @@ export const SPEAKERS = {
     side: 'right',
     color: '#ffc955ff',
     avatar: '/avatars/kakiya_still.png', // ← ここを立ち絵に
-    icon:   '/avatars/timeline/icon_kakiya.webp', // タイムライン用軽量（小さめ・WebP推奨）
+    icon: '/avatars/timeline/icon_kakiya.webp', // タイムライン用軽量（小さめ・WebP推奨）
     lang: 'ja',
     translateTo: 'en',
   },
@@ -14,7 +14,7 @@ export const SPEAKERS = {
     side: 'left',
     color: '#a4ff55ff',
     avatar: '/avatars/yoneda_still.png', // ← ここを立ち絵に
-    icon:   '/avatars/timeline/icon_yoneda.webp', // タイムライン用軽量（小さめ・WebP推奨）
+    icon: '/avatars/timeline/icon_yoneda.webp', // タイムライン用軽量（小さめ・WebP推奨）
     lang: 'ja',
     translateTo: 'en',
   },
@@ -23,7 +23,7 @@ export const SPEAKERS = {
     side: 'left',
     color: '#426effff',
     avatar: '/avatars/haracternick_still.png', // ← ここを立ち絵に
-    icon:   '/avatars/timeline/icon_haracternick.webp', // タイムライン用軽量（小さめ・WebP推奨）
+    icon: '/avatars/timeline/icon_haracternick.webp', // タイムライン用軽量（小さめ・WebP推奨）
     lang: 'en',
     translateTo: 'ja',
   },
@@ -42,5 +42,5 @@ export function getSpeaker(userId) {
 }
 
 export function getSpeakerConfig(userId) {
-  return SPEAKERS.get(userId) || null;
+  return SPEAKERS[userId] || null;
 }

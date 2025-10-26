@@ -112,7 +112,7 @@ print("done", flush=True)
     console.warn('[whisper][selftest] failed:', e?.message || e);
   }
 }
-+selfTestCuda();
+selfTestCuda();
 
 // === 3) 共通引数 ==============================================================
 const BASE_ARGS = (filePath, outDir) => ([
@@ -132,16 +132,24 @@ const BASE_ARGS = (filePath, outDir) => ([
 ]);
 
 async function runWhisperOnce(device, filePath, outDir) {
-  const args = [...BASE_ARGS(filePath, outDir), '--device', device, ...(device === 'cpu' ? ['--fp16', 'False'] : [])];
+  const args = [
+    ...BASE_ARGS(filePath, outDir),
+    '--device', device,
+    ...(device === 'cpu' ? ['--fp16', 'False'] : []),
+    // DEBUG=0 のときも progress は付けない（Whisper CLI 非対応のため）
+    // verbose 抑制は BASE_ARGS 側の '--verbose False' で十分
+  ];
+
   if (DEBUG) console.info(`[whisper] exec: ${WHISPER_CMD} ${args.join(' ')}`);
 
   try {
-    const { stdout, stderr } = await execFileAsync(WHISPER_CMD, args, { env: EXEC_ENV });
+    const { stdout, stderr } = await execFileAsync(WHISPER_CMD, args, {
+      env: process.env, // stdio は既定（pipe）のまま
+    });
     if (DEBUG && stderr?.trim()) console.warn('[whisper][stderr]', stderr.trim());
     if (DEBUG && stdout?.trim()) console.info('[whisper][stdout]', stdout.trim());
     return { stdout, stderr, device };
   } catch (e) {
-    // ENOENTはコマンド自体が見つからない
     if (e?.code === 'ENOENT') {
       console.error('[whisper] ENOENT: whisper command not found at runtime. WHISPER_CMD or PATH may be wrong. cmd=', WHISPER_CMD);
     }

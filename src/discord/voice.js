@@ -13,7 +13,7 @@ import {
 } from '@discordjs/voice';
 
 import { client, GUILD_ID, VOICE_CHANNEL_ID, TEXT_CHANNEL_ID } from './client.js';
-import { transcribeAudioGPU } from './transcribe.js';
+import { transcribeAudioGPU } from '../core/transcribe.js';
 // index.js で作った io を受け取る style（将来的選択肢）
 let ioRef = null;
 export function setIo(io) { ioRef = io; }
