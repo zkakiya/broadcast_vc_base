@@ -5,9 +5,12 @@
   <meta charset="utf-8" />
   <title>Now — Subtitles</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="/now.css">
-  <link rel="stylesheet" href="/css/base.css">
-  <link id="skin-css" rel="stylesheet" href="/css/skins/multi.css">
+  <!-- 共通トークン + スキン -->
+  <link rel="stylesheet" href="/css/base.css?v=%BUILD_ID%">
+  <link rel="stylesheet" href="/css/skins/%SKIN%.css?v=%BUILD_ID%">
+
+  <!-- 画面専用 -->
+  <link rel="stylesheet" href="/css/now.css?v=%BUILD_ID%">
   <script>
     // クエリで skin 指定可（?skin=solo）。無指定は multi。
     (function () {

@@ -1,239 +1,101 @@
+/* 最新発言ビュー専用。ベース変数を尊重しつつ画面用トークンを追加 */
 :root {
-    --fg: #fff;
-    --text-stroke: #000;
-    --bg: rgba(0, 0, 0, 0);
-    --bubble: transparent;
-    --radius: 16px;
-    --font: "ヒラギノ角ゴ Pro", "游ゴシック体", YuGothic, "游ゴシック Medium", "Yu Gothic Medium", "游ゴシック", "Yu Gothic", sans-serif;
-    --pad: 24px;
-    --maxw: 100%;
-
-    /* アバターデッキ用（JSからも上書き可能） */
-    --pfp-size: 75vh;
-    --pfp-inactive: 0.3;
-    /* 非アクティブ時の透明度 */
+    --latest-maxw: 1000px;
+    --pfp-gap: 10px;
+    --pfp-inactive: 0.45;
+    --pfp-size: 86px;
+    --pfp-scale: 1;
 }
 
-* {
-    box-sizing: border-box;
-}
-
-html,
-body {
-    margin: 0;
-    height: 100%;
-    background: var(--bg);
-    color: var(--fg);
-    font-family: var(--font);
-    font-weight: bold;
-    -webkit-text-stroke: 1.0px var(--text-stroke);
-    line-height: 1.2;
-}
-
-body[data-view="latest"] {
-    --bubble: rgba(0, 0, 0, .65)
-}
-
-#safe-area {
-    box-sizing: border-box;
-    display: flex;
-    flex-direction: column;
-    justify-content: flex-end;
-    height: 100vh;
-    padding: 0;
-    position: relative;
-    max-width: var(--maxw);
+/* ルート / ラッパ */
+.now-root {
+    align-items: center;
+    display: grid;
+    gap: 14px;
+    grid-template-columns: 1fr;
+    justify-items: center;
     margin: 0 auto;
-}
-
-/* 最新バブル */
-.bubble {
-    justify-content: flex-end;
-    background: var(--bubble);
-    border-radius: var(--radius);
-    display: flex;
-    flex-direction: column;
+    max-width: var(--latest-maxw);
+    padding: 16px;
     width: 100%;
-    padding: 16px 20px;
-    opacity: 1;
-    transition: opacity 600ms ease;
-    /* お好みで */
-    will-change: opacity;
 }
 
-/* フェード中 */
-.bubble.is-fading {
-    opacity: 0;
-    /* ここは !important なくてもOKにする設計 */
-}
-
-.bubble .name {
-    font-weight: 700;
-    margin-bottom: 6px
-}
-
-.bubble .text {
-    white-space: pre-wrap;
-    word-break: break-word
-}
-
-.bubble .tr {
-    margin-top: 6px;
-    opacity: .9
-}
-
-/* 最新発言 */
-#now {
-    bottom: var(--pad);
-    position: fixed;
-    left: var(--pad);
-    right: var(--pad);
-    width: auto;
-}
-
-
-/* ★ アバターデッキ（固定表示） */
-#avatars {
-    position: absolute;
-    inset: 0;
-    overflow: hidden;
-    pointer-events: none;
-    /* 誤操作防止。必要なら外す */
-}
-
-/* アバター共通（配置はクラスで変える） */
-.deck-avatar {
-    position: absolute;
+/* アバターデッキ（固定配置用） */
+.deck {
     height: var(--pfp-size);
+    position: relative;
+    width: 100%;
+}
+
+.deck-avatar {
     border-radius: 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
+    filter: grayscale(100%) saturate(0.3) brightness(0.9) contrast(0.95);
+    height: var(--pfp-size);
+    left: 0;
     object-fit: cover;
     opacity: 1;
-    transition: opacity .25s ease, filter .25s ease, transform .25s ease, box-shadow .25s ease;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
-    /* ↓ 非アクティブ時に少し落とす（必要なければ削除） */
-    filter: grayscale(100%) saturate(0.3) brightness(0.9) contrast(0.95);
-    /* これを追加！ */
-    transform: scale(var(--scale, 1));
-    /* デフォルト1倍 */
-    transform-origin: center center;
-}
-
-/* アクティブ話者だけ不透明 */
-.deck-avatar.active {
-    opacity: 1;
-    filter: none;
-}
-
-.deck-avatar.dimmed {
-    filter: grayscale(100%) saturate(0.3) brightness(0.75) contrast(0.95);
-}
-
-/* 位置（最小の雛形）。slot=0,1,2... で縦に並べる */
-.deck-avatar.side-left {
-    left: 0;
-}
-
-.deck-avatar.side-right {
-    right: 0;
-}
-
-/* 縦位置は JS が --slot を付けます（例: 0,1,2...）。式はご自由に調整 */
-.deck-avatar {
-    top: calc(15% + (var(--slot, 0) * 22%));
-}
-
-/* === マスクはオプトイン（data-mask="1" の時だけ適用） === */
-.deck-avatar[data-mask="1"] {
-    -webkit-mask-image: var(--mask-image);
-    mask-image: var(--mask-image);
-    -webkit-mask-mode: alpha;
-    mask-mode: alpha;
-    -webkit-mask-repeat: no-repeat;
-    mask-repeat: no-repeat;
-    -webkit-mask-position: center;
-    mask-position: center;
-    -webkit-mask-size: contain;
-    mask-size: contain;
-}
-
-/* もし好みなら、軽い鼓動アニメ */
-@keyframes pfpPulse {
-
-    0%,
-    100% {
-        transform: scale(1);
-    }
-
-    50% {
-        transform: scale(1.08);
-    }
-}
-
-.deck-avatar.pulse {
-    animation: pfpPulse 600ms ease;
-}
-
-.deck-avatar.active {
-    outline: 3px solid rgba(255, 255, 255, .7);
-    outline-offset: 2px;
-}
-
-/* ==== View Mode visibility === */
-[data-view="avatars"] #now {
-    display: none !important;
-}
-
-[data-view="latest"] #avatars {
-    display: none !important;
-}
-
-/* ==== Bubble tail / theme ===================================== */
-.bubble {
-    position: relative;
-}
-
-/* 尻尾サイズ（px）と左右のアンカー（%）は JS からも上書き可 */
-.bubble {
-    --tail-size: 14px;
-    --tail-x: 12%;
-}
-
-/* デフォルトは下辺に三角を出す（背景は --bubble を参照） */
-.bubble::after {
-    content: "";
     position: absolute;
-    width: 0;
-    height: 0;
-    border: var(--tail-size) solid transparent;
-    bottom: 100%;
-    /* バブル下辺 */
+    top: 0;
+    transform: scale(var(--pfp-scale));
+    transform-origin: center center;
+    transition: opacity .25s ease, filter .25s ease, transform .25s ease, box-shadow .25s ease;
+    width: var(--pfp-size);
 }
 
-/* 左話者：左寄り（--tail-x% の位置）に尻尾 */
+.deck-avatar.inactive {
+    filter: brightness(0.7) contrast(0.9) saturate(0.3);
+    opacity: var(--pfp-inactive);
+}
+
+.deck-avatar.active {
+    filter: none;
+    opacity: 1;
+}
+
+/* 最新バブル（中央） */
+.latest {
+    display: grid;
+    justify-items: center;
+    width: 100%;
+}
+
+.latest .bubble {
+    background: var(--bubble);
+    border: 2px solid var(--bubble-border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow);
+    max-width: min(86%, 980px);
+    padding: 12px 16px;
+    text-align: center;
+}
+
+/* 尻尾の左右（now は中央配置が多いので任意） */
 .bubble.left::after {
-    left: clamp(12px, var(--tail-x), 45%);
-    border-bottom-color: var(--bubble);
-    border-top: 0;
+    left: 18px;
 }
 
-/* 右話者：右寄り（--tail-x% を右からの距離に換算）に尻尾 */
 .bubble.right::after {
-    right: clamp(12px, calc(100% - var(--tail-x)), 45%);
-    border-bottom-color: var(--bubble);
-    border-top: 0;
+    right: 18px;
 }
 
-/* ---- テーマ（例）: 話者により背景・縁取りを変えたい場合 ---- */
-.bubble[data-theme="gold"] {
-    --bubble: rgba(24, 22, 18, .78);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, .45), 0 0 0 2px rgba(170, 133, 85, .75) inset;
+/* 初期はフェード済み（“残骸”抑止） */
+.latest .bubble.is-fading {
+    opacity: 0;
+    transform: translateY(6px);
 }
 
-.bubble[data-theme="blue"] {
-    --bubble: rgba(15, 22, 40, .78);
-    box-shadow: 0 12px 40px rgba(0, 0, 0, .45), 0 0 0 2px rgba(85, 117, 221, .75) inset;
+/* 名前・翻訳（共通トークンのまま） */
+.latest .name {
+    color: var(--name);
+    font-weight: 700;
+    margin-bottom: 6px;
 }
 
-/* 既存の --bubble が transparent のままだと尻尾が見えないので、
-   尻尾を出す画面（latest.html）では --bubble を不透明寄りにしてください。
-   例: body[data-view="latest"] { --bubble: rgba(0,0,0,.65); } */
+.latest .tr {
+    border-left: 3px solid var(--tr-accent);
+    font-size: 13px;
+    margin-top: 6px;
+    opacity: .85;
+    padding-left: 8px;
+}

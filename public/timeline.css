@@ -1,87 +1,34 @@
+/* タイムライン画面専用の軽微な上書きのみ（骨格は base.css を使用） */
 :root {
-    --fg: #fff;
-    --text-stroke: #000;
-    --bg: rgba(0, 0, 0, 0.4);
-    --bubble: transparent;
-    --radius: 14px;
-    --font: "ヒラギノ角ゴ Pro", "游ゴシック体", YuGothic, "游ゴシック Medium", "Yu Gothic Medium", "游ゴシック", "Yu Gothic", sans-serif;
+    --gap: 6px 0;
+    --max-width: 1000px;
     --pad: 24px;
-    --gap: 5px 0;
-    --maxw: 1000px;
 }
 
-html,
-body {
-    margin: 0;
-    height: 100vh;
-    background: var(--bg);
-    color: var(--fg);
-    font-family: var(--font);
-    font-weight: bold;
-    -webkit-text-stroke: 0.5px var(--text-stroke);
-    line-height: 1.2;
-}
-
-#safe-area {
-    box-sizing: border-box;
+.timeline-page {
+    margin: 0 auto;
+    max-width: var(--max-width);
     padding: var(--pad);
-    height: 100vh;
-    max-width: var(--maxw);
-    margin: 0 auto
+    width: 100%;
 }
 
-#timeline {
-    display: flex;
-    flex-direction: column;
-    gap: var(--gap);
-    height: 100%;
-    overflow: hidden
+/* エントリー間の隙間・幅 */
+.timeline {
+    gap: 12px;
 }
 
-.entry {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px
-}
-
-.entry.side-right {
-    flex-direction: row-reverse
-}
-
-.pfp {
-    display: block;
-    border-radius: 10px;
-    object-fit: cover
-}
-
+/* バブルの横幅は画面に合わせて広めに */
 .bubble {
-    background: var(--bubble);
-    border-radius: var(--radius);
-    padding: 0.25rem 0;
     max-width: 100%;
+    padding: 8px 12px;
 }
 
+/* 名前・翻訳の微調整（タイムラインは小さめ） */
 .name {
-    font-weight: 700;
-    margin-bottom: 4px;
-}
-
-.text {
-    white-space: pre-wrap;
-    word-break: break-word
+    margin-bottom: 2px;
 }
 
 .tr {
-    margin-top: 6px;
-    opacity: .9
-}
-
-.entry.side-left .bubble,
-.entry.side-left .name {
-    text-align: left;
-}
-
-.entry.side-right .bubble,
-.entry.side-right .name {
-    text-align: right;
+    font-size: 12px;
+    margin-top: 4px;
 }

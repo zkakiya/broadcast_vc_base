@@ -1,13 +1,16 @@
 :root {
+    --avatar-size: 48px;
     --bg: #0b0c12;
     --bubble: rgba(22, 22, 28, .92);
     --bubble-border: rgba(110, 135, 255, .25);
-    --name: #C9D4FF;
+    --name: #c9d4ff;
     --radius: 18px;
     --shadow: 0 8px 28px rgba(20, 30, 80, .35);
+    --tail-size: 8px;
     --tr-accent: rgba(110, 135, 255, .35);
 }
 
+/* 見た目の微調整（最小） */
 .entry img.pfp {
     border-radius: 50%;
     box-shadow:
