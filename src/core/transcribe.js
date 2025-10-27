@@ -3,10 +3,16 @@
 
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
+import { FWWorker } from '../core/asr/worker.js';
 import { execFile, execFileSync } from 'child_process';
 import util from 'util';
 
 const execFileAsync = util.promisify(execFile);
+
+// ── ESM: __dirname 相当 ─────────────────────────────────────────
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // === 実装切替・共通設定 ========================================================
 let IMPL = (process.env.WHISPER_IMPL || 'whisper').toLowerCase(); // 'faster' | 'whisper'
@@ -17,11 +23,17 @@ const NO_SPEECH = process.env.WHISPER_NO_SPEECH ?? '0.3';
 const STRIP_CLOSERS = (process.env.WHISPER_STRIP_CLOSERS ?? '1') === '1';
 const DEBUG = process.env.WHISPER_DEBUG === '1';
 
-// faster-whisper ランナー設定
+// faster-whisper 常駐ワーカー切替
+const USE_FW_WORKER = process.env.FW_WORKER === '1';
 const FW_PY = process.env.WHISPER_PY || '/home/z_kakiya/whisper-venv/bin/python';
-const FW_RUNNER = path.join(process.cwd(), 'src/core/fw_runner.py');
+
+// ★ このファイル基準でパスを解決（CWDに依存しない）
+const FW_WORKER_SCRIPT = path.resolve(__dirname, '../core/fw_worker.py');
+
+// faster-whisper ランナー設定（CLI呼び出し版）
+const FW_RUNNER = path.resolve(__dirname, '../core/fw_runner.py');
 const FW_DEVICE = process.env.FASTER_WHISPER_DEVICE || 'cuda';     // cuda / cpu
-const FW_COMPUTE = process.env.FW_COMPUTE_TYPE || 'float16';       // float16 / int8_float16 / int8
+const FW_COMPUTE = process.env.FW_COMPUTE_TYPE || 'float16';        // float16 / int8_float16 / int8
 
 // === Whisper CLI の解決 =======================================================
 function resolveWhisperCmd() {
@@ -37,10 +49,10 @@ function resolveWhisperCmd() {
   try {
     const found = execFileSync('bash', ['-lc', 'command -v whisper'], { encoding: 'utf8' }).trim();
     if (found) return found;
-  } catch { }
+  } catch { /* noop */ }
 
   for (const p of candidates) {
-    try { if (p && fs.existsSync(p)) return p; } catch { }
+    try { if (p && fs.existsSync(p)) return p; } catch { /* noop */ }
   }
 
   const searchList = [
@@ -161,24 +173,59 @@ function filterSegments(segments) {
   return kept.join('').trim();
 }
 
+// ★ 常駐ワーカー（singleton）
+let fwWorker = null;
+let fwWorkerDisabled = false; // ★ 追加：クラッシュ検知で当面は使わない
+
+function getFw() {
+  if (!fwWorker) {
+    fwWorker = new FWWorker({
+      python: FW_PY,
+      script: FW_WORKER_SCRIPT, // ← __dirname 基準で安定
+      init: {
+        model: process.env.WHISPER_MODEL || 'small',
+        device: process.env.FASTER_WHISPER_DEVICE || 'cuda',
+        compute: process.env.FW_COMPUTE_TYPE || 'float16',
+        lang: process.env.WHISPER_LANG || 'ja',
+      },
+    });
+  }
+  return fwWorker;
+}
+
 // === メイン API ===============================================================
 export async function transcribeAudioGPU(filePath) {
   const outDir = path.dirname(filePath);
-  const jsonPath = pickJsonPath(filePath);
+  const base = path.basename(filePath, path.extname(filePath));
+  const jsonPath = path.join(outDir, `${base}.json`);
 
   // 前回の残骸を掃除
-  try { if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath); } catch { }
+  try { if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath); } catch { /* noop */ }
 
   let usedImpl = 'whisper'; // 実際に使った実装名（ログ用）
 
-  // 1) faster-whisper を選択している場合はまず試す
+  // 1) FW_WORKER を優先
+  if (USE_FW_WORKER && !fwWorkerDisabled) {
+    try {
+      const { text, segments } = await getFw().transcribe(filePath, { lang: WHISPER_LANG });
+      const t = filterSegments(segments) || (text || '').trim();
+      return stripClosers(t || '') || null;
+    } catch (e) {
+      console.warn('[faster][worker] failed, fallback to existing path:', e?.message || e);
+      // このプロセス生存中はワーカー経路を封印（クラッシュループを防ぐ）
+      fwWorkerDisabled = true;
+      // 以降は既存ルートへフォールバック
+    }
+  }
+
   if (IMPL === 'faster') {
+    // 2) faster-whisper を選択している場合はまず試す
     try {
       await runFasterWhisper(filePath, outDir);
       usedImpl = 'faster';
     } catch (e) {
       if (DEBUG) console.warn('[faster] failed, fallback to whisper:', e?.message || e);
-      // フォールバックして続行
+      // フォールバック（whisper → cuda → cpu）
       try {
         await runWhisperOnce('cuda', filePath, outDir);
       } catch (e1) {
@@ -193,7 +240,7 @@ export async function transcribeAudioGPU(filePath) {
       usedImpl = 'whisper';
     }
   } else {
-    // 2) IMPL=whisper の場合は従来どおり
+    // 3) IMPL=whisper の場合は従来どおり
     try {
       await runWhisperOnce('cuda', filePath, outDir);
     } catch (e1) {
@@ -219,20 +266,18 @@ export async function transcribeAudioGPU(filePath) {
       if (DEBUG) console.warn('[whisper] json parse failed:', e?.message || e);
     } finally {
       if (process.env.WHISPER_KEEP_JSON !== '1') {
-        try { fs.unlinkSync(jsonPath); } catch { }
+        try { fs.unlinkSync(jsonPath); } catch { /* noop */ }
       }
     }
   }
 
-  // 旧来の stdout / .txt フォールバックは、--output_format json 指定で基本不要。
-  // 念のため .txt があれば読む（互換）
+  // 念のため .txt フォールバック（互換）
   if (!text) {
-    const base = path.basename(filePath, path.extname(filePath));
     const txtPath = path.join(outDir, `${base}.txt`);
     if (fs.existsSync(txtPath)) {
-      try { text = fs.readFileSync(txtPath, 'utf8').trim(); } catch { }
+      try { text = fs.readFileSync(txtPath, 'utf8').trim(); } catch { /* noop */ }
       if (process.env.WHISPER_KEEP_TXT !== '1') {
-        try { fs.unlinkSync(txtPath); } catch { }
+        try { fs.unlinkSync(txtPath); } catch { /* noop */ }
       }
     }
   }

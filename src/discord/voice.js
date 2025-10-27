@@ -43,11 +43,9 @@ const activeSessions = new Map();  // userId -> { closing: boolean }
 const lastTexts = new Map();       // userId -> { text, ts }
 
 // ── Whisper直列実行（負荷スパイク抑制） ───────────────────
-let last = Promise.resolve();
-function enqueue(task) {
-  last = last.then(() => task()).catch(() => { }).finally(() => { });
-  return last;
-}
+import { createLimiter } from '../utils/limiter.js';
+const limitASR = createLimiter(Number(process.env.ASR_CONCURRENCY || 2));
+function enqueue(task) { return limitASR(task); } // 全体N並列
 
 // ── 再接続ポリシー（環境変数で上書き可） ─────────────────────────
 const VOICE_RETRY_MAX = Number(process.env.VOICE_RETRY_MAX ?? 5);                // 最大試行
@@ -166,9 +164,9 @@ export async function joinAndRecordVC() {
     console.log(`🔊 ${userId} started speaking`);
 
     // 無音しきい値（ms）は環境変数で可変。既定600ms（取りこぼし低減）
-    const SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 600);
+    const SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 300);
     const opusStream = receiver.subscribe(userId, {
-      end: { behavior: EndBehaviorType.AfterSilence, duration: Number(process.env.VAD_SILENCE_MS || 600) },
+      end: { behavior: EndBehaviorType.AfterSilence, duration: SILENCE_MS },
     });
 
     opusStream.setMaxListeners(0);

@@ -31,15 +31,22 @@ if (fs.existsSync(modeEnvPath)) {
   console.log('[env] mode file missing:', `apps/.env.${MODE}`);
 }
 
-// スナップショット表示（確認用）
-console.log('[env] MODE =', MODE);
-console.log('[env] snapshot:', {
-  WHISPER_IMPL: process.env.WHISPER_IMPL,
-  WHISPER_MODEL: process.env.WHISPER_MODEL,
-  FASTER_WHISPER_DEVICE: process.env.FASTER_WHISPER_DEVICE,
-  FW_COMPUTE_TYPE: process.env.FW_COMPUTE_TYPE,
-  WHISPER_LANG: process.env.WHISPER_LANG,
-});
+// ── 実効値（既定を適用したスナップショット） ──────────────────────────
+// ※ ログは「undefined」ではなく最終的に使われる値を出す。
+// ※ 実行時参照もズレないように、未設定なら環境変数へ補完もしておく。
+const EFFECTIVE = {
+  MODE,
+  WHISPER_IMPL: (process.env.WHISPER_IMPL || 'whisper'),
+  WHISPER_MODEL: (process.env.WHISPER_MODEL || 'small'),
+  FASTER_WHISPER_DEVICE: (process.env.FASTER_WHISPER_DEVICE || 'cuda'),
+  FW_COMPUTE_TYPE: (process.env.FW_COMPUTE_TYPE || 'float16'),
+  WHISPER_LANG: (process.env.WHISPER_LANG || 'ja'),
+};
+// 環境変数への安全な補完（未定義のみ）
+for (const [k, v] of Object.entries(EFFECTIVE)) {
+  if (process.env[k] === undefined) process.env[k] = String(v);
+}
+console.log('[env] snapshot (effective):', EFFECTIVE);
 
 // 2) env 確定後に他モジュールを読み込む（ここから従来のロジック）
 const { CONFIG } = await import('./config.js');
