@@ -25,6 +25,11 @@ import { translateText } from '../utils/translate.js';
 let currentConnection = null;
 let isReconnecting = false; // 多重再接続ガード
 
+// ── 低遅延向けパラメータ（ENVで上書き可） ─────────────────────
+const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 350);   // 終端判定
+const UTTER_MAX_MS = Number(process.env.UTTER_MAX_MS || 3000);  // 強制カット(ミリ秒)
+const SEG_GAP_MS = Number(process.env.SEG_GAP_MS || 80);    // セグメント切替の休止(安全マージン)
+
 // --- 翻訳ユーティリティ（OpenAI優先 / 最小実装） -----------------
 const TRANSLATE_ENABLED = process.env.TRANSLATE_ENABLED === '1';
 const TRANSLATE_TARGET_DEFAULT = process.env.TRANSLATE_TARGET_DEFAULT || ''; // 空なら後述の自動判定
@@ -159,31 +164,171 @@ export async function joinAndRecordVC() {
 
     // 既に録音中なら重複subscribeを防止
     if (activeSessions.has(userId)) return;
-    activeSessions.set(userId, { closing: false });
+    activeSessions.set(userId, { closing: false, segment: 0, open: true });
 
     console.log(`🔊 ${userId} started speaking`);
 
-    // 無音しきい値（ms）は環境変数で可変。既定600ms（取りこぼし低減）
-    const SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 300);
+    // VADサイレンス短縮版
     const opusStream = receiver.subscribe(userId, {
-      end: { behavior: EndBehaviorType.AfterSilence, duration: SILENCE_MS },
+      end: { behavior: EndBehaviorType.AfterSilence, duration: VAD_SILENCE_MS },
     });
-
     opusStream.setMaxListeners(0);
 
-    // 一時WAV
-    const wavPath = path.join(recordingsDir, `${userId}-${Date.now()}.wav`);
+    // セグメント状態（同一発話で共通ID/メッセージを使い回す）
+    let segIndex = 0;
+    let wavPath = null;
+    let wavWriter = null;
+    let decoder = null;
+    let forceTimer = null;
+    let segStart = 0;
+    let baseId = null;           // ★ 発話ごとの固定ID
+    let firstFlushDone = false;  // ★ 最初のセグメントかどうか
+    let sentMsgRef = null;       // ★ Discordの Message 参照（編集で追記）
 
-    // Opus → PCM(48k/mono) → WAV
-    const decoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 48000 });
-    const wavWriter = new wav.FileWriter(wavPath, { sampleRate: 48000, channels: 1 });
+    // セグメント開始
+    const startSegment = () => {
+      segIndex += 1;
+      segStart = Date.now();
+      wavPath = path.join(recordingsDir, `${userId}-${segStart}-${segIndex}.wav`);
+      decoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 48000 });
+      wavWriter = new wav.FileWriter(wavPath, { sampleRate: 48000, channels: 1 });
+      // パイプ（新しい writer に差し替え）
+      opusStream
+        .pipe(decoder)
+        .on('error', (e) => console.error('decoder error:', e))
+        .pipe(wavWriter)
+        .on('error', (e) => console.error('wavWriter error:', e));
+      // 強制カットタイマー
+      if (forceTimer) clearTimeout(forceTimer);
+      forceTimer = setTimeout(() => {
+        // 長すぎる発話を分割して早出し
+        endSegment(/*force*/ true);
+      }, UTTER_MAX_MS);
+    };
 
-    opusStream
-      .on('error', (e) => console.error('opusStream error:', e))
-      .pipe(decoder)
-      .on('error', (e) => console.error('decoder error:', e))
-      .pipe(wavWriter)
-      .on('error', (e) => console.error('wavWriter error:', e));
+    // セグメント終了
+    const endSegment = (forced = false) => {
+      if (!wavWriter) return;
+      // 既存パイプを切り離してWAVを閉じる
+      try { decoder?.unpipe?.(wavWriter); } catch { }
+      try { wavWriter.end(); } catch { }
+      if (forceTimer) { clearTimeout(forceTimer); forceTimer = null; }
+
+      const thisWav = wavPath; // ローカルに固定
+      wavWriter = null; decoder = null; wavPath = null;
+
+      // ファイルフラッシュ待ち→ASR投入
+      setTimeout(async () => {
+        try {
+          const st = fs.statSync(thisWav);
+          const MIN_WAV_BYTES = Number(process.env.MIN_WAV_BYTES ?? 48000);
+          if (st.size < MIN_WAV_BYTES) {
+            if (process.env.SHORT_WAV_LOG !== '0') {
+              console.log(`(skip) short wav: ${st.size}B < ${MIN_WAV_BYTES}B`);
+            }
+            try { fs.unlinkSync(thisWav); } catch { }
+            return;
+          }
+          // Whisper直列（キュー）で投入
+          const recognizedText = await enqueue(() => transcribeAudioGPU(thisWav));
+          if (recognizedText && recognizedText.length) {
+            const prev = lastTexts.get(userId);
+            if (prev && prev.text === recognizedText && Date.now() - prev.ts < 3000) {
+              // デュープ抑止
+            } else {
+              lastTexts.set(userId, { text: recognizedText, ts: Date.now() });
+              // 話者メタ
+              const sp = getSpeaker(userId);
+              const speakerName = sp?.name || 'Speaker';
+              const speakerSide = sp?.side;
+              const speakerColor = sp?.color;
+              const speakerAvatar = sp?.avatar;
+              const speakerIcon = sp?.icon;
+              const translateTarget = sp?.translateTo || CONFIG?.translate?.defaultTarget;
+
+              // ★ 同一発話の共通IDを使う（最初だけ transcript、以降は transcript_update）
+              if (!baseId) baseId = `${userId}-${segStart}`;
+              if (!firstFlushDone) {
+                firstFlushDone = true;
+                const payload = {
+                  id: baseId,
+                  userId,
+                  name: speakerName,
+                  side: speakerSide,
+                  color: speakerColor,
+                  avatar: speakerAvatar,
+                  icon: speakerIcon,
+                  text: recognizedText,
+                  lang: sp?.lang || 'ja',
+                  ts: Date.now(),
+                };
+                if (ioRef) ioRef.emit('transcript', payload);
+              } else {
+                // 2個目以降は追記イベント（UI側は id で本文に append して表示を伸ばす）
+                if (ioRef) ioRef.emit('transcript_update', { id: baseId, append: recognizedText });
+              }
+
+              // Discordへ原文送信/追記 → 後追い翻訳
+              try {
+                const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID);
+                if (textChannel && textChannel.isTextBased()) {
+                  if (!sentMsgRef) {
+                    // 最初は新規メッセージ
+                    sentMsgRef = await textChannel.send(`**${speakerName}**: ${recognizedText}`);
+                  } else {
+                    // 2個目以降は編集で追記
+                    const cur = sentMsgRef.content ?? '';
+                    const next = cur + '\n' + recognizedText;
+                    try { await sentMsgRef.edit(next); }
+                    catch { /* 失敗時はフォールバックで新規送信 */
+                      sentMsgRef = await textChannel.send(recognizedText);
+                    }
+                  }
+                }
+                (async () => {
+                  try {
+                    if (!CONFIG?.translate?.enabled) return;
+                    if (!translateTarget) return;
+                    const tr = await translateText({ text: recognizedText, target: translateTarget });
+                    if (!tr) return;
+                    // UI側に訳の追記
+                    if (ioRef) ioRef.emit('transcript_update', { id: baseId, tr: { to: translateTarget, text: tr } });
+                    // Discord側も訳を追記（> 引用で末尾に）
+                    if (sentMsgRef) {
+                      const cur = sentMsgRef.content ?? '';
+                      const next = `${cur}\n> _${tr}_`;
+                      try { await sentMsgRef.edit(next); }
+                      catch {
+                        const ch = await client.channels.fetch(TEXT_CHANNEL_ID);
+                        if (ch && ch.isTextBased()) sentMsgRef = await ch.send(`> _${tr}_`);
+                      }
+                    }
+                  } catch (e) {
+                    console.warn('[translate async] failed:', e?.message || e);
+                  }
+                })();
+              } catch (e) {
+                console.error('❌ Failed to send message:', e);
+              }
+            }
+          }
+        } catch (e) {
+          console.error('❌ Whisper error:', e);
+        } finally {
+          try {
+            if (fs.existsSync(thisWav)) fs.unlinkSync(thisWav);
+          } catch { }
+        }
+      }, 100);
+
+      // 次のセグメントへ（強制カット時のみ即座に再開）
+      if (forced) {
+        setTimeout(() => { startSegment(); }, SEG_GAP_MS);
+      }
+    };
+    opusStream.on('error', (e) => console.error('opusStream error:', e));
+    // 最初のセグメントを開始
+    startSegment();
 
     opusStream.once('end', async () => {
       // 二重close防止
@@ -192,118 +337,17 @@ export async function joinAndRecordVC() {
       if (s) s.closing = true;
 
       console.log(`⏹️ ${userId} presumed end of speech`);
-      try { wavWriter.end(); } catch { }
-
-      // FileWriter flush 待ち（安全策）
-      setTimeout(async () => {
-        try {
-          // ★ ここで即座に開放：次の発話をブロックしない
-          activeSessions.delete(userId);
-
-          // 話者情報は最初に取得して以降で使う（TDZ回避）
-          const sp = getSpeaker(userId);
-
-          // WAVの最小長をチェック（48kHz/mono なら 1秒 ≒ 96KB + ヘッダ）
-          const st = fs.statSync(wavPath);
-          const MIN_WAV_BYTES = Number(process.env.MIN_WAV_BYTES ?? 48000); // 目安:0.5秒
-          if (st.size < MIN_WAV_BYTES) {
-            // 短すぎる断片は静かにスキップ（ログ抑制は環境変数で）
-            if (process.env.SHORT_WAV_LOG !== '0') {
-              console.log(`(skip) short wav: ${st.size}B < ${MIN_WAV_BYTES}B`);
-            }
-            // 先に削除して終了
-            try { fs.unlinkSync(wavPath); } catch { }
-            return; // ★ ここで終わり（throwしない）
-          }
-
-          // Whisperは直列実行で負荷を平準化
-          const recognizedText = await enqueue(() => transcribeAudioGPU(wavPath));
-
-          if (recognizedText && recognizedText.length) {
-            // 短時間の完全一致は重複として破棄（ソフト・デュープ）
-            const prev = lastTexts.get(userId);
-
-
-            if (prev && prev.text === recognizedText && Date.now() - prev.ts < 3000) {
-              return;
-            }
-            lastTexts.set(userId, { text: recognizedText, ts: Date.now() });
-
-            // ここで必要情報を“確定”しておく（IIFE内では sp を使わない）
-            const speakerName = sp?.name || 'Speaker';
-            const speakerSide = sp?.side;
-            const speakerColor = sp?.color;
-            const speakerAvatar = sp?.avatar;
-            const speakerIcon = sp?.icon;
-            const translateTarget = sp?.translateTo || CONFIG?.translate?.defaultTarget;
-
-            const msgId = `${userId}-${Date.now()}`;
-            const payload = {
-              id: msgId,
-              userId,
-              name: speakerName,
-              side: speakerSide,
-              color: speakerColor,
-              avatar: speakerAvatar,
-              icon: speakerIcon,
-              text: recognizedText,
-              lang: sp.lang || 'ja',
-              ts: Date.now(),
-            };
-            if (ioRef) ioRef.emit('transcript', payload); // ★ 原文を即時表示
-
-            // 2) Discordテキストへ（まず原文だけ送信、Messageを保持）
-            try {
-              const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID);
-              if (textChannel && textChannel.isTextBased()) {
-                var sentMsg = await textChannel.send(`**${speakerName}**: ${recognizedText}`);
-              } else {
-                console.warn('Text channel not found or not text-based');
-              }
-            } catch (e) {
-              console.error('❌ Failed to send message:', e);
-            }
-
-            // 3) 翻訳は後追い（必要情報はすべて引数で渡す／同じ try 内で起動）
-            (async (origText, msgIdLocal, nameLocal, targetLocal, sentMsgLocal) => {
-              try {
-                if (!CONFIG?.translate?.enabled) return;
-                if (!targetLocal) return; // 送信先言語未設定なら何もしない
-                const tr = await translateText({ text: origText, target: targetLocal });
-                if (!tr) return;
-                // 配信画面に追記
-                if (ioRef) ioRef.emit('transcript_update', { id: msgIdLocal, tr: { to: targetLocal, text: tr } });
-                // Discord: 原文メッセージを編集して訳を追記
-                if (sentMsgLocal) {
-                  const newContent = `**${nameLocal}**\n${origText}\n> _${tr}_`;
-                  try {
-                    await sentMsgLocal.edit(newContent);
-                  } catch {
-                    // 失敗したらフォールバックで追記メッセージ
-                    const ch = await client.channels.fetch(TEXT_CHANNEL_ID);
-                    if (ch && ch.isTextBased()) await ch.send(`> _${tr}_`);
-                  }
-                }
-              } catch (e) {
-                console.warn('[translate async] failed:', e?.message || e);
-              }
-            })(recognizedText, msgId, speakerName, translateTarget, sentMsg);
-
-          }
-        } catch (e) {
-          console.error('❌ Whisper error:', e);
-        } finally {
-          // 一時WAVは必ず削除
-          try {
-            // すでに削除済みならスキップ（ENOENT抑制）
-            if (fs.existsSync(wavPath)) {
-              fs.unlink(wavPath, (err) => {
-                if (err && err.code !== 'ENOENT') console.warn('WAV delete failed:', err?.message);
-              });
-            }
-          } catch { }
-        }
-      }, 100);
+      // 最終セグメントを閉じてASRへ
+      try { endSegment(false); } catch { }
+      if (forceTimer) { clearTimeout(forceTimer); forceTimer = null; }
+      // すべてのセグメント処理は各 endSegment 内で行うので、ここではセッション解放のみ
+      setTimeout(() => {
+        activeSessions.delete(userId);
+        // ★ 発話終了でリセット
+        baseId = null;
+        firstFlushDone = false;
+        sentMsgRef = null;
+      }, 50);
     });
   });
 }
