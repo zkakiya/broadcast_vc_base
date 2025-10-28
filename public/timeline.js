@@ -1,13 +1,13 @@
+// public/timeline.js
 (() => {
   const socket = io();
   const root = document.getElementById('timeline');
   const q = new URLSearchParams(location.search);
   const limit = Number(q.get('limit') || 10);
-  const pfpMode = (q.get('pfp') || 'none');    // 既定:なし。'icon'|'avatar'も可
+  const pfpMode = (q.get('pfp') || 'none');    // 'none' | 'icon' | 'avatar'
   const pfpSize = Number(q.get('avatar') || 48);
   const entries = [];
 
-  // side未指定のとき、userIdで左右を安定化
   function normSide(e) {
     const s = String(e.side || '').toLowerCase();
     if (s === 'l' || s === 'left') return 'left';
@@ -17,13 +17,13 @@
     return (h & 1) === 0 ? 'left' : 'right';
   }
 
-
   function render() {
     root.innerHTML = '';
     const items = entries.slice(-limit);
     for (const e of items) {
       const row = document.createElement('div');
       row.className = `entry side-${e.side || 'left'}`;
+      row.dataset.id = e.id;
 
       const src = pfpMode === 'icon' ? (e.icon || e.avatar)
         : pfpMode === 'avatar' ? (e.avatar || e.icon) : null;
@@ -51,33 +51,52 @@
       text.textContent = e.text || '';
       bubble.appendChild(text);
 
-      if (e.tr?.text) {
-        const tr = document.createElement('div');
-        tr.className = 'tr';
-        tr.textContent = e.tr.text;
-        bubble.appendChild(tr);
-      }
+      const trEl = document.createElement('div');
+      trEl.className = 'tr';
+      trEl.textContent = e.tr?.text || '';
+      bubble.appendChild(trEl);
 
       row.appendChild(bubble);
       root.appendChild(row);
-      // スクロールを末尾へ
-      root.scrollTop = root.scrollHeight;
     }
+    root.scrollTop = root.scrollHeight;
   }
 
-  socket.on('transcript', (payload) => { entries.push(payload); render(); });
-
-  // 訳の追記：同じ id のエントリに tr を反映して再描画
-  socket.on('transcript_update', ({ id, tr }) => {
-    if (!id) return;
-    const idx = entries.findIndex(e => e.id === id);
-    if (idx >= 0) {
-      entries[idx] = { ...entries[idx], tr: tr ? { ...tr } : undefined };
-      render();
-    }
+  socket.on('transcript', (payload) => {
+    entries.push({
+      ...payload,
+      side: normSide(payload),
+      tr: payload.tr ? { ...payload.tr } : undefined,
+      text: payload.text || ''
+    });
+    render();
   });
 
-  // 運用ショートカット（任意）
+  // append / replace（翻訳）/ append（翻訳）
+  socket.on('transcript_update', ({ id, append, tr }) => {
+    if (!id) return;
+    const idx = entries.findIndex(e => e.id === id);
+    if (idx < 0) return;
+
+    const e = entries[idx];
+
+    if (typeof append === 'string' && append.length) {
+      e.text = (e.text || '') + append;
+    }
+    if (tr && typeof tr.text === 'string') {
+      const mode = tr.mode || 'append';
+      const to = tr.to;
+      if (!e.tr) e.tr = { to, text: '' };
+      if (mode === 'replace') {
+        e.tr = { to, text: tr.text };
+      } else {
+        e.tr = { to, text: (e.tr.text || '') + tr.text };
+      }
+    }
+    entries[idx] = e;
+    render();
+  });
+
   window.addEventListener('keydown', (e) => {
     if (e.key === 'c') { entries.length = 0; render(); }
   });

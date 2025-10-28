@@ -7,6 +7,7 @@ import { fileURLToPath } from 'url';
 import { FWWorker } from '../core/asr/worker.js';
 import { execFile, execFileSync } from 'child_process';
 import util from 'util';
+import { applyUserDictionary, getPersonProtectSet } from '../utils/dictionary.js';
 
 const execFileAsync = util.promisify(execFile);
 
@@ -106,6 +107,7 @@ async function runFasterWhisper(filePath, outDir) {
     '--device', FW_DEVICE,
     '--compute', FW_COMPUTE,
     '--lang', WHISPER_LANG,
+    ...(process.env.ASR_HINTS ? ['--initial_prompt', process.env.ASR_HINTS] : []),
   ];
   if (DEBUG) console.info(`[faster] exec: ${FW_PY} ${args.join(' ')}`);
   await execFileAsync(FW_PY, args, { env: process.env });
@@ -187,6 +189,7 @@ function getFw() {
         device: process.env.FASTER_WHISPER_DEVICE || 'cuda',
         compute: process.env.FW_COMPUTE_TYPE || 'float16',
         lang: process.env.WHISPER_LANG || 'ja',
+        initial_prompt: process.env.ASR_HINTS || undefined,
       },
     });
   }
@@ -207,7 +210,9 @@ export async function transcribeAudioGPU(filePath) {
   // 1) FW_WORKER を優先
   if (USE_FW_WORKER && !fwWorkerDisabled) {
     try {
-      const { text, segments } = await getFw().transcribe(filePath, { lang: WHISPER_LANG });
+      const { text, segments } = await getFw().transcribe(filePath, {
+        lang: process.env.WHISPER_LANG || 'ja',
+      });
       const t = filterSegments(segments) || (text || '').trim();
       return stripClosers(t || '') || null;
     } catch (e) {
@@ -282,7 +287,59 @@ export async function transcribeAudioGPU(filePath) {
     }
   }
 
-  text = stripClosers(text || '');
+  function sanitizeRepeats(text) {
+    if (!text) return text;
+    const hints = (process.env.ASR_HINTS || '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(Boolean);
+
+    let out = text;
+
+    // 1) ヒント語が「4回以上」連なるとき、最大2回に畳む（区切りは空白/読点/カンマを許容）
+    const sep = String.raw`[\s、,]*`;
+    for (const h of hints) {
+      if (!h) continue;
+      const esc = h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // 正規表現エスケープ
+      const re = new RegExp(`(?:${esc}${sep}){4,}`, 'g');
+      out = out.replace(re, `${h}、${h}`);
+    }
+
+    // 2) 任意語の“機械連呼”も保険で畳む（同一トークン6連以上 → 2回に）
+    out = out.replace(/(\S+)(?:\s*\1){5,}/g, '$1 $1');
+
+    return out;
+  }
+
+  text = sanitizeRepeats(stripClosers(text || ''));
+  text = applyUserDictionary(text);
   if (DEBUG) console.info('[asr] impl:', usedImpl, ' / text:', text);
   return text || null;
+}
+
+export async function transcribeAudioGPUStream(filePath, { onPartial } = {}) {
+  // ワーカーが有効なら逐次
+  if (USE_FW_WORKER) {
+    const fw = getFw();
+    try {
+      let finalText = '';
+      finalText = await fw.transcribeStream(
+        filePath,
+        { lang: process.env.WHISPER_LANG || 'ja' },
+        {
+          onPartial: (p) => {
+            // p.text を都度 Append で上げる
+            onPartial?.(String(p.text || ''));
+          },
+          onFinal: () => { /* no-op */ },
+        }
+      );
+      return finalText || null;
+    } catch (e) {
+      console.warn('[asr stream] failed, fallback to batch:', e?.message || e);
+      // バッチへ
+    }
+  }
+  // フォールバック：従来バッチ
+  return await transcribeAudioGPU(filePath);
 }
