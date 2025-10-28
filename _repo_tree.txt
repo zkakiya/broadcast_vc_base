@@ -97,6 +97,7 @@
 .gitignore
 README.md
 STRUCTURE.txt
+_repo_tree.txt
 apps/.env.example
 apps/dictionary.json
 cuda-keyring_1.1-1_all.deb
