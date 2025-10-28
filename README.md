@@ -153,4 +153,154 @@ npm run start   # 本番モード（ログ抑制）
 
 ---
 
+## アーキテクチャ
+
+本プロジェクトは「Discord VC → Whisper → 翻訳 → OBSブラウザ表示」を行う配信用システムです。  
+Node.js（メイン処理）＋ Python（ASRワーカー）で構成されています。
+
+---
+
+### 1. 実行スクリプト & 主要依存
+
+**起動スクリプト**
+| モード | コマンド |
+|:--|:--|
+| 開発（共通） | `npm run dev` → `NODE_ENV=development node src/index.js` |
+| 本番 | `npm start` → `NODE_ENV=production node src/index.js` |
+| マルチVCモード | `npm run dev:multi` → `.env.shared + .env.multi` |
+| ソロ入力モード | `npm run dev:solo` → `.env.shared + .env.solo` |
+
+**主要依存**
+- Discord連携：`discord.js`, `@discordjs/voice`, `@discordjs/opus`
+- 音声処理：`prism-media`, `wav`
+- Web/配信：`express`, `socket.io`, `ws`
+- 環境・補助：`dotenv`, `dotenv-cli`, `chokidar`
+
+---
+
+### 2. ディレクトリ構成
+
+```
+src/
+  index.js                 # エントリポイント（環境読込 → Discord & Web起動）
+  env/load.js              # .env 群ロード
+  web/server.js            # Express + Socket.IO 配信サーバ
+  discord/
+    client.js              # Discordクライアント
+    voice.js               # VC音声受信 (Opus→PCM→WAV)
+  core/
+    transcribe.js          # ASR制御 (faster-whisper 呼出)
+    fw_worker.py           # Whisperワーカー (GPU対応)
+    fw_runner.py           # Pythonランナー
+    asr/worker.js          # Nodeワーカー (ASRキュー)
+    schema.js, log.js
+  utils/
+    translate.js           # 翻訳API呼出
+    dictionary.js          # 辞書適用（人名保護等）
+    text_sanitize.js       # 正規化処理
+    limiter.js, logger.js
+  registry/speakers.js     # 話者メタ管理
+  solo/                    # ソロ入力モード
+public/
+  timeline.html/.js/.css   # タイムライン表示
+  latest.html/.js/.css     # 最新発言表示（アバター固定）
+  now.html/.js/.css        # 軽量表示
+  avatars/                 # アバター素材
+  css/                     # スキン・共通スタイル
+  position.config.json     # 配置設定
+apps/
+  .env.shared / .env.multi / .env.solo / .env.example
+  dictionary.json          # 人名辞書
+```
+
+---
+
+### 3. モード構成 (.env)
+
+| ファイル | 役割 |
+|:--|:--|
+| `.env` | ルート共通 |
+| `apps/.env.shared` | 共通設定（Discord Token 等） |
+| `apps/.env.multi` | マルチVCモード |
+| `apps/.env.solo` | 単体テストモード |
+
+例：
+```bash
+MODE=multi
+WHISPER_IMPL=faster
+WHISPER_MODEL=small
+FASTER_WHISPER_DEVICE=cuda
+FW_COMPUTE_TYPE=float16
+WHISPER_LANG=ja
+FW_WORKER=1
+ASR_HINTS=ディスコード, OBS, レイテンシ
+ASR_DICT_APPLY_TR=1
+TRANS_TRANSLATE_THROTTLE_MS=800
+```
+
+---
+
+### 4. データフロー概要
+
+1. **音声入力**：`discord/voice.js`  
+   Discord VCからユーザー別に音声を受信し、Opus → PCM → WAV に変換。
+
+2. **ASR処理**：`core/transcribe.js`  
+   Node側で音声をPythonワーカー（`fw_worker.py`）に送信。  
+   `faster-whisper` をGPUで実行し、テキストを返す。
+
+3. **正規化・辞書置換**：`utils/text_sanitize.js`, `utils/dictionary.js`  
+   日本語特有の表記ゆれ、人名のマスキング、敬称処理を行う。
+
+4. **翻訳**：`utils/translate.js`  
+   Google Translate API等で翻訳（今後DeepL/Azure切替対応予定）。
+
+5. **配信**：`web/server.js`  
+   Socket.IOで`public/`ブラウザへ送信。  
+   `timeline.html`, `latest.html`, `now.html`がそれぞれOBS向けUIを表示。
+
+---
+
+### 5. 出力UI構成
+
+| ページ | 内容 |
+|:--|:--|
+| `timeline.html` | 発話履歴を縦リスト表示。ログ／字幕用途。 |
+| `latest.html` | 最新発言＋アバター固定。左右配置＋フェード表示。 |
+| `now.html` | 最小限UI（発話中のみ簡易表示）。 |
+| `position.config.json` | 各アバター位置・話者マッピング。 |
+
+---
+
+### 6. Whisper & GPU構成
+
+- `faster-whisper` をPythonワーカーとして常駐。  
+- `FW_WORKER=1` で単一ワーカー（将来的に並列化対応）。  
+- CUDA検出後、`torch 2.5.x + cu121` を想定。  
+- Nodeから`child_process`または`worker_threads`でジョブキュー管理。
+
+---
+
+### 7. 特徴・運用ポイント
+
+- モード切替（multi / solo）により Discord VC・単体録音の両対応。
+- `apps/dictionary.json` に敬称あり/なし両対応の人名辞書。
+- ASR → 翻訳間の遅延：平均0.8〜1.2秒（GPU環境時）。
+- `timeline.js` ではID単位マージ＋欠落防止ロジック済み。
+- `.env`に`ASR_HINTS`を指定可能（ホットワード強化）。
+
+---
+
+### 8. 次フェーズ予定
+
+- 翻訳APIアダプタ化（DeepL / Azure対応）
+- latest UI強化（固定配置 + フェードアウト）
+- Whisperモデル自動切替（small / medium）
+- PM2またはDockerによる永続運用
+- `/healthz` APIによる稼働監視
+
+---
+
+（以上）
+
 © 2025 zkakiya / Broadcast VC Base
