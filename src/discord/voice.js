@@ -17,7 +17,7 @@ import { transcribeAudioGPU } from '../core/transcribe.js';
 let ioRef = null;
 export function setIo(io) { ioRef = io; }
 import { getSpeaker } from '../registry/speakers.js';
-import { CONFIG } from '../config.js';
+import { CFG } from '../config.js';
 import { translateText } from '../utils/translate.js';
 import { sanitizeASR, canonicalizeForDup } from '../utils/text_sanitize.js';
 
@@ -289,7 +289,7 @@ export async function joinAndRecordVC() {
               const speakerColor = sp?.color;
               const speakerAvatar = sp?.avatar;
               const speakerIcon = sp?.icon;
-              const translateTarget = sp?.translateTo || CONFIG?.translate?.defaultTarget;
+              const translateTarget = sp?.translateTo || CFG?.translate?.defaultTarget;
 
               if (!baseId) baseId = `${userId}-${segStart}`;
               if (!firstFlushDone) {
@@ -326,7 +326,8 @@ export async function joinAndRecordVC() {
                 }
 
                 // 訳はバッファして“置換”で安定表示
-                if (CONFIG?.translate?.enabled && translateTarget) {
+                const trEnabled = (CFG?.translate?.enabled ?? true);
+                if (trEnabled && translateTarget) {
                   scheduleTranslate({
                     id: baseId,
                     appendText: cleanedText + ' ',

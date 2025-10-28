@@ -1,12 +1,14 @@
 // src/utils/translate.js
-import { CONFIG } from '../config.js';
+import { CFG } from '../config.js';
 
 const hasOpenAI = !!process.env.OPENAI_API_KEY;
 const hasDeepL = !!process.env.DEEPL_API_KEY;
 const hasLibre = !!process.env.LIBRETRANSLATE_URL;
 
 export async function translateText({ text, source, target }) {
-  if (!CONFIG.translate.enabled) return null;
+  // enabled 未設定(undefined)なら true とみなす（既存挙動維持）
+  const enabled = (CFG.translate?.enabled ?? true);
+  if (!enabled) return null;
   if (!text || !target || target === source) return null;
 
   try {

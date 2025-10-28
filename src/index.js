@@ -1,9 +1,10 @@
 // src/index.js
-
-// 1) まず .env ロードを“確定”させる（後勝ちで上書き）
 import fs from 'fs';
 import path from 'path';
 import dotenv from 'dotenv';
+import { CFG, assertConfig } from './config.js';
+assertConfig();
+// (CFG is now available across the app)
 
 // 既定: .env（最下層）
 if (fs.existsSync(path.resolve('.env'))) {
@@ -49,7 +50,6 @@ for (const [k, v] of Object.entries(EFFECTIVE)) {
 console.log('[env] snapshot (effective):', EFFECTIVE);
 
 // 2) env 確定後に他モジュールを読み込む（ここから従来のロジック）
-const { CONFIG } = await import('./config.js');
 const { client } = await import('./discord/client.js');
 const { cleanRecordingsDir } = await import('./utils/cleanup.js');
 const { io, startWebServer } = await import('./web/server.js');
@@ -57,7 +57,8 @@ const { io, startWebServer } = await import('./web/server.js');
 console.log('[boot] index.js start');
 
 console.log('[boot] cleanup…');
-await cleanRecordingsDir(CONFIG.clean);
+// CFG.clean が未定義でも落ちないようにデフォルトを当てる
+await cleanRecordingsDir(CFG.clean ?? {});
 console.log('[boot] cleanup done');
 
 console.log('[boot] start web server…');
@@ -95,7 +96,7 @@ if (MODE === 'multi') {
   client.once('clientReady', onClientReady);
 
   console.log('[boot] login…');
-  await client.login(CONFIG.botToken);
+  await client.login(CFG.discord?.token);
 } else if (MODE === 'solo') {
   // solo は Discord を使わない。即座にソロのパイプラインを起動。
   const kind = (process.env.SOLO_MODE || 'realtime').toLowerCase();

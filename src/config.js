@@ -1,30 +1,64 @@
 // src/config.js
-import 'dotenv/config';
+// Refactor v1 - step 1: centralize configuration & validation
+// Usage:
+//   import { CFG, assertConfig } from './config.js';
+//   assertConfig();
+import './env/load.js';
 
-export const CONFIG = {
-  webPort: Number(process.env.WEB_PORT ?? 3000),
-  publicDir: process.env.PUBLIC_DIR || 'public',
-  corsOrigin: process.env.CORS_ORIGIN || '*',
+function bool(v, d=false) {
+  if (v === undefined || v === null || v === '') return d;
+  return ['1','true','yes','on'].includes(String(v).trim().toLowerCase());
+}
+function num(v, d) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : d;
+}
+function csv(v='') {
+  return String(v).split(',').map(s=>s.trim()).filter(Boolean);
+}
 
-  guildId: process.env.GUILD_ID,
-  voiceChannelId: process.env.VOICE_CHANNEL_ID,
-  textChannelId: process.env.TEXT_CHANNEL_ID,
-  botToken: process.env.BOT_TOKEN,
-
-  recordingsDir: process.env.RECORDINGS_DIR || './src/recordings',
-  minWavBytes: Number(process.env.MIN_WAV_BYTES ?? 48000),       // ~0.5秒
-  vadSilenceMs: Number(process.env.VAD_SILENCE_MS ?? 600),       // 600–900おすすめ
-  whisperNoSpeech: process.env.WHISPER_NO_SPEECH ?? '0.3',
-
-  shortWavLog: process.env.SHORT_WAV_LOG !== '0',               // ログ抑制トグル
-  clean: {
-  dir: process.env.RECORDINGS_DIR || './src/recordings',
-  maxAgeMinutes: Number(process.env.CLEAN_RECORDINGS_MAX_AGE_MIN ?? 0),
-  dryRun: process.env.CLEAN_RECORDINGS_DRY_RUN === '1',
+export const CFG = {
+  mode: process.env.MODE || 'multi',
+  port: num(process.env.PORT, 8080),
+  wsPort: num(process.env.WS_PORT, 8081),
+  discord: {
+    token: process.env.DISCORD_TOKEN,
+    guildId: process.env.GUILD_ID,
+    voiceChannelId: process.env.VOICE_CH_ID,
+  },
+  asr: {
+    impl: process.env.WHISPER_IMPL || 'faster',
+    model: process.env.WHISPER_MODEL || 'small',
+    lang: process.env.WHISPER_LANG || 'ja',
+    fwWorker: num(process.env.FW_WORKER, 1),
+    hints: csv(process.env.ASR_HINTS),
+    computeType: process.env.FW_COMPUTE_TYPE || 'float16',
+    device: process.env.FASTER_WHISPER_DEVICE || 'cuda',
   },
   translate: {
-    enabled: process.env.TRANSLATE_ENABLED === '1',
-    defaultTarget: process.env.TRANSLATE_TARGET_DEFAULT || 'en',
+    provider: (process.env.TRANS_PROVIDER || 'google').toLowerCase(),
+    throttleMs: num(process.env.TRANS_TRANSLATE_THROTTLE_MS, 800),
+    deeplKey: process.env.DEEPL_API_KEY,
+    azureKey: process.env.AZURE_TRANSLATOR_KEY,
+    azureRegion: process.env.AZURE_TRANSLATOR_REGION,
   },
+  flags: {
+    dictApplyTr: bool(process.env.ASR_DICT_APPLY_TR, true),
+  },
+  metrics: {
+    // for future model auto-switch
+    window: num(process.env.METRICS_WINDOW, 20),
+    switchUpMs: num(process.env.ASR_SWITCH_UP_MS, 900),
+    switchDownMs: num(process.env.ASR_SWITCH_DOWN_MS, 700),
+  }
 };
 
+export function assertConfig() {
+  const missing = [];
+  if (!CFG.discord.token) missing.push('DISCORD_TOKEN');
+  if (!CFG.discord.guildId) missing.push('GUILD_ID');
+  if (CFG.mode === 'multi' && !CFG.discord.voiceChannelId) missing.push('VOICE_CH_ID');
+  if (missing.length) {
+    throw new Error(`Missing required env: ${missing.join(', ')}`);
+  }
+}
