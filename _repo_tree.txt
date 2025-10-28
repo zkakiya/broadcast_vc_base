@@ -1,0 +1,154 @@
+.
+├── .env
+├── .gitignore
+├── README.md
+├── STRUCTURE.txt
+├── _repo_tree.txt
+├── apps
+│   ├── .env.example
+│   ├── .env.multi
+│   ├── .env.shared
+│   ├── .env.solo
+│   └── dictionary.json
+├── cuda-keyring_1.1-1_all.deb
+├── package-lock.json
+├── package.json
+├── public
+│   ├── app.js
+│   ├── avatars
+│   │   ├── default.png
+│   │   ├── haracternick_still.png
+│   │   ├── kakiya_still.png
+│   │   ├── masks
+│   │   │   ├── haracternick_mask.png
+│   │   │   ├── kakiya_mask.png
+│   │   │   └── yoneda_mask.png
+│   │   ├── timeline
+│   │   │   ├── icon_haractanick.webp
+│   │   │   ├── icon_kakiya.webp
+│   │   │   └── icon_yoneda.webp
+│   │   └── yoneda_still.png
+│   ├── avatars.css
+│   ├── avatars.html
+│   ├── avatars.js
+│   ├── common.js
+│   ├── css
+│   │   ├── base.css
+│   │   └── skins
+│   │       ├── multi.css
+│   │       └── solo.css
+│   ├── index.html
+│   ├── latest.css
+│   ├── latest.html
+│   ├── latest.js
+│   ├── now.css
+│   ├── now.html
+│   ├── now.js
+│   ├── position.config.json
+│   ├── timeline.css
+│   ├── timeline.html
+│   └── timeline.js
+└── src
+    ├── config.js
+    ├── core
+    │   ├── asr
+    │   │   └── worker.js
+    │   ├── fw_runner.py
+    │   ├── fw_worker.py
+    │   ├── log.js
+    │   ├── schema.js
+    │   └── transcribe.js
+    ├── discord
+    │   ├── client.js
+    │   └── voice.js
+    ├── env
+    │   └── load.js
+    ├── index.js
+    ├── recordings
+    ├── registry
+    │   └── speakers.js
+    ├── solo
+    │   ├── inbox
+    │   │   ├── 20251026-1214
+    │   │   │   ├── chunk-000000000.wav
+    │   │   │   ├── chunk-000000001.wav
+    │   │   │   ├── chunk-000000002.wav
+    │   │   │   └── chunk-000000003.wav
+    │   │   ├── chunk-000000000.wav
+    │   │   ├── chunk-000000001.wav
+    │   │   ├── chunk-000000002.wav
+    │   │   ├── chunk-000000003.wav
+    │   │   ├── chunk-000000004.wav
+    │   │   ├── chunk-000000005.wav
+    │   │   └── chunk-000000006.wav
+    │   ├── realtime.js
+    │   └── recorder.js
+    ├── utils
+    │   ├── cleanup.js
+    │   ├── dictionary.js
+    │   ├── limiter.js
+    │   ├── logger.js
+    │   ├── text_sanitize.js
+    │   └── translate.js
+    └── web
+        └── server.js
+
+20 directories, 74 files
+.gitignore
+README.md
+STRUCTURE.txt
+apps/.env.example
+apps/dictionary.json
+cuda-keyring_1.1-1_all.deb
+package-lock.json
+package.json
+public/app.js
+public/avatars.css
+public/avatars.html
+public/avatars.js
+public/avatars/default.png
+public/avatars/haracternick_still.png
+public/avatars/kakiya_still.png
+public/avatars/masks/haracternick_mask.png
+public/avatars/masks/kakiya_mask.png
+public/avatars/masks/yoneda_mask.png
+public/avatars/timeline/icon_haractanick.webp
+public/avatars/timeline/icon_kakiya.webp
+public/avatars/timeline/icon_yoneda.webp
+public/avatars/yoneda_still.png
+public/common.js
+public/css/base.css
+public/css/skins/multi.css
+public/css/skins/solo.css
+public/index.html
+public/latest.css
+public/latest.html
+public/latest.js
+public/now.css
+public/now.html
+public/now.js
+public/position.config.json
+public/timeline.css
+public/timeline.html
+public/timeline.js
+src/config.js
+src/core/asr/worker.js
+src/core/fw_runner.py
+src/core/fw_worker.py
+src/core/log.js
+src/core/schema.js
+src/core/transcribe.js
+src/discord/client.js
+src/discord/voice.js
+src/env/load.js
+src/index.js
+src/registry/speakers.js
+src/solo/realtime.js
+src/solo/recorder.js
+src/utils/cleanup.js
+src/utils/dictionary.js
+src/utils/limiter.js
+src/utils/logger.js
+src/utils/text_sanitize.js
+src/utils/translate.js
+src/web/server.js

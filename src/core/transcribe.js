@@ -1,103 +1,85 @@
-// src/discord/transcribe.js
-// Node -> Whisper を実行して文字起こし（faster-whisper 切替可 / GPU優先 / CPUフォールバック / 起動時にGPU自己診断）
+// src/core/transcribe.js
+// Node -> Whisper (faster-whisper優先 / GPU→CPUフォールバック / 起動時CUDA自己診断)
+// 人名ホットワード & ユーザー辞書適用 & 連呼抑止を含む
 
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { FWWorker } from '../core/asr/worker.js';
 import { execFile, execFileSync } from 'child_process';
 import util from 'util';
-import { applyUserDictionary, getPersonProtectSet } from '../utils/dictionary.js';
+
+import { FWWorker } from './asr/worker.js';
+import {
+  applyUserDictionary,
+  loadUserDictionary,
+  buildPeopleHotwordPrompt,
+  getPersonProtectSet,
+} from '../utils/dictionary.js';
+import { fuzzyPeopleReplace } from '../utils/text_sanitize.js';
 
 const execFileAsync = util.promisify(execFile);
 
-// ── ESM: __dirname 相当 ─────────────────────────────────────────
+// ── ESM: __dirname ─────────────────────────────────────────
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// === 実装切替・共通設定 ========================================================
+// === 共通設定 ================================================================
 let IMPL = (process.env.WHISPER_IMPL || 'whisper').toLowerCase(); // 'faster' | 'whisper'
-const MODEL = process.env.WHISPER_MODEL || 'small';                // 速度寄りの既定
+const MODEL = process.env.WHISPER_MODEL || 'small';
 const WHISPER_LANG = process.env.WHISPER_LANG || 'ja';
 
 const NO_SPEECH = process.env.WHISPER_NO_SPEECH ?? '0.3';
 const STRIP_CLOSERS = (process.env.WHISPER_STRIP_CLOSERS ?? '1') === '1';
 const DEBUG = process.env.WHISPER_DEBUG === '1';
 
-// faster-whisper 常駐ワーカー切替
 const USE_FW_WORKER = process.env.FW_WORKER === '1';
 const FW_PY = process.env.WHISPER_PY || '/home/z_kakiya/whisper-venv/bin/python';
 
-// ★ このファイル基準でパスを解決（CWDに依存しない）
-const FW_WORKER_SCRIPT = path.resolve(__dirname, '../core/fw_worker.py');
+// このファイル基準で解決（CWD依存を排除）
+const FW_WORKER_SCRIPT = path.resolve(__dirname, './fw_worker.py');
+const FW_RUNNER = path.resolve(__dirname, './fw_runner.py');
 
-// faster-whisper ランナー設定（CLI呼び出し版）
-const FW_RUNNER = path.resolve(__dirname, '../core/fw_runner.py');
 const FW_DEVICE = process.env.FASTER_WHISPER_DEVICE || 'cuda';     // cuda / cpu
-const FW_COMPUTE = process.env.FW_COMPUTE_TYPE || 'float16';        // float16 / int8_float16 / int8
+const FW_COMPUTE = process.env.FW_COMPUTE_TYPE || 'float16';       // float16 / int8_float16 / int8
 
-// === Whisper CLI の解決 =======================================================
+// === Whisper CLI の解決 ======================================================
 function resolveWhisperCmd() {
   const fromEnv = process.env.WHISPER_CMD;
-  const candidates = [
-    fromEnv,
-    '/usr/local/bin/whisper',
-    '/usr/bin/whisper',
-    'whisper', // PATH に任せる
-  ].filter(Boolean);
-
-  // PATH検索を先に試す
+  const candidates = [fromEnv, '/usr/local/bin/whisper', '/usr/bin/whisper', 'whisper'].filter(Boolean);
   try {
     const found = execFileSync('bash', ['-lc', 'command -v whisper'], { encoding: 'utf8' }).trim();
     if (found) return found;
-  } catch { /* noop */ }
-
+  } catch { }
   for (const p of candidates) {
-    try { if (p && fs.existsSync(p)) return p; } catch { /* noop */ }
+    try { if (p && fs.existsSync(p)) return p; } catch { }
   }
-
-  const searchList = [
-    `PATH=${process.env.PATH || ''}`,
-    ...candidates.map(p => `candidate: ${p}`),
-  ].join('\n  ');
+  const searchList = [`PATH=${process.env.PATH || ''}`, ...candidates.map(p => `candidate: ${p}`)].join('\n  ');
   throw new Error(`[whisper] executable not found.\n  ${searchList}`);
 }
-
 const WHISPER_CMD = resolveWhisperCmd();
 
-// === whisper の shebang から python を推定 → CUDA 自己診断 ===================
 function detectPythonFromWhisper(cmd) {
   try {
     const head = fs.readFileSync(cmd, 'utf8').split('\n')[0] || '';
     const m = head.match(/^#!\s*(.*python[0-9.]*)/i);
-    return m ? m[1].trim() : null; // 例: /usr/bin/python3
-  } catch {
-    return null; // バイナリの場合など
-  }
+    return m ? m[1].trim() : null;
+  } catch { return null; }
 }
-
 function probeCuda() {
   const py = detectPythonFromWhisper(WHISPER_CMD);
-  if (!py) {
-    if (DEBUG) console.info('[whisper] no python shebang detected; skip CUDA probe');
-    return;
-  }
+  if (!py) { if (DEBUG) console.info('[whisper] no shebang; skip CUDA probe'); return; }
   try {
-    const out = execFileSync(
-      py,
-      ['-c', 'import torch,sys;print("torch",torch.__version__);print("cuda",torch.cuda.is_available());print("cuda_ver",getattr(torch.version,"cuda",None));'],
-      { encoding: 'utf8' }
-    );
+    const out = execFileSync(py, ['-c',
+      'import torch,sys;print("torch",torch.__version__);print("cuda",torch.cuda.is_available());print("cuda_ver",getattr(torch.version,"cuda",None));'
+    ], { encoding: 'utf8' });
     console.info('[whisper][probe]\n' + out.trim());
   } catch (e) {
-    console.warn('[whisper][probe] failed to run python torch check:', e?.message || e);
+    console.warn('[whisper][probe] failed:', e?.message || e);
   }
 }
 probeCuda();
 
-// === 実行系：faster-whisper & Whisper CLI ====================================
-
-// faster-whisper（fw_runner.py）を呼び出す
+// === 実行系：faster-whisper & Whisper CLI ===================================
 async function runFasterWhisper(filePath, outDir) {
   const base = path.basename(filePath, path.extname(filePath));
   const jsonPath = path.join(outDir, `${base}.json`);
@@ -114,7 +96,6 @@ async function runFasterWhisper(filePath, outDir) {
   return jsonPath;
 }
 
-// Whisper CLI（GPU → CPUフォールバック）
 const BASE_ARGS = (filePath, outDir) => ([
   filePath,
   '--model', MODEL,
@@ -127,28 +108,22 @@ const BASE_ARGS = (filePath, outDir) => ([
   '--condition_on_previous_text', 'False',
   '--no_speech_threshold', NO_SPEECH,
   '--compression_ratio_threshold', '2.4',
-  '--verbose', 'False', // 端末へのセグメント出力抑止
+  '--verbose', 'False',
 ]);
-
 async function runWhisperOnce(device, filePath, outDir) {
-  const args = [
-    ...BASE_ARGS(filePath, outDir),
-    '--device', device,
-    ...(device === 'cpu' ? ['--fp16', 'False'] : []),
-  ];
+  const args = [...BASE_ARGS(filePath, outDir), '--device', device, ...(device === 'cpu' ? ['--fp16', 'False'] : [])];
   if (DEBUG) console.info(`[whisper] exec: ${WHISPER_CMD} ${args.join(' ')}`);
   const { stdout, stderr } = await execFileAsync(WHISPER_CMD, args, { env: process.env });
   if (DEBUG && stderr?.trim()) console.warn('[whisper][stderr]', stderr.trim());
   if (DEBUG && stdout?.trim()) console.info('[whisper][stdout]', stdout.trim());
 }
 
-// === ユーティリティ：JSON 読み出し・テキスト整形 =============================
+// === ユーティリティ ==========================================================
 function pickJsonPath(filePath) {
   const outDir = path.dirname(filePath);
   const baseName = path.basename(filePath, path.extname(filePath));
   return path.join(outDir, `${baseName}.json`);
 }
-
 function stripClosers(text) {
   if (!STRIP_CLOSERS || !text) return text;
   const closers = [
@@ -160,35 +135,52 @@ function stripClosers(text) {
   return text;
 }
 
-function filterSegments(segments) {
-  const MIN_AVG_LOGPROB = Number(process.env.WHISPER_MIN_AVG_LOGPROB ?? -1.0);
-  const MAX_NO_SPEECH = Number(process.env.WHISPER_MAX_NO_SPEECH ?? 0.60);
+// 連呼抑止 + 人名の近似補正 + ユーザー辞書
+function sanitizeFinal(text) {
+  if (!text) return text;
 
-  const kept = [];
-  for (const s of (segments || [])) {
-    const lp = Number(s?.avg_logprob ?? 0);
-    const ns = Number(s?.no_speech_prob ?? 0);
-    if (lp < MIN_AVG_LOGPROB) continue;
-    if (ns > MAX_NO_SPEECH) continue;
-    if (typeof s?.text === 'string' && s.text.trim()) kept.push(s.text);
+  const hints = (process.env.ASR_HINTS || '')
+    .split(',')
+    .map(s => s.trim())
+    .filter(Boolean);
+
+  let out = text.trim();
+
+  // 1) ヒント語の機械連呼（4回以上）を最大2回に畳む
+  const sep = String.raw`[\s、,]*`;
+  for (const h of hints) {
+    const esc = h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`(?:${esc}${sep}){4,}`, 'g');
+    out = out.replace(re, `${h}、${h}`);
   }
-  return kept.join('').trim();
+  // 2) 任意語の6連以上も念のため2回に
+  out = out.replace(/(\S+)(?:\s*\1){5,}/g, '$1 $1');
+
+  // 3) 人名の近似補正（ユーザー辞書の people を使う）
+  try {
+    const dict = loadUserDictionary();
+    out = fuzzyPeopleReplace(out, dict.people || []);
+  } catch { }
+
+  // 4) 最後に辞書の置換を適用
+  out = applyUserDictionary(out);
+
+  return out || null;
 }
 
-// ★ 常駐ワーカー（singleton）
+// ★ 常駐ワーカー（singleton）+ クラッシュ時は封印
 let fwWorker = null;
-let fwWorkerDisabled = false; // ★ 追加：クラッシュ検知で当面は使わない
-
+let fwWorkerDisabled = false;
 function getFw() {
   if (!fwWorker) {
     fwWorker = new FWWorker({
       python: FW_PY,
-      script: FW_WORKER_SCRIPT, // ← __dirname 基準で安定
+      script: FW_WORKER_SCRIPT,
       init: {
-        model: process.env.WHISPER_MODEL || 'small',
-        device: process.env.FASTER_WHISPER_DEVICE || 'cuda',
-        compute: process.env.FW_COMPUTE_TYPE || 'float16',
-        lang: process.env.WHISPER_LANG || 'ja',
+        model: MODEL,
+        device: FW_DEVICE,
+        compute: FW_COMPUTE,
+        lang: WHISPER_LANG,
         initial_prompt: process.env.ASR_HINTS || undefined,
       },
     });
@@ -196,150 +188,91 @@ function getFw() {
   return fwWorker;
 }
 
-// === メイン API ===============================================================
+// === メイン API ==============================================================
 export async function transcribeAudioGPU(filePath) {
   const outDir = path.dirname(filePath);
   const base = path.basename(filePath, path.extname(filePath));
   const jsonPath = path.join(outDir, `${base}.json`);
+  try { if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath); } catch { }
 
-  // 前回の残骸を掃除
-  try { if (fs.existsSync(jsonPath)) fs.unlinkSync(jsonPath); } catch { /* noop */ }
+  let usedImpl = 'whisper';
 
-  let usedImpl = 'whisper'; // 実際に使った実装名（ログ用）
-
-  // 1) FW_WORKER を優先
+  // 1) ワーカー経路（低レイテンシ）
   if (USE_FW_WORKER && !fwWorkerDisabled) {
     try {
+      const hotwordPrompt = buildPeopleHotwordPrompt({ repeats: 2 }); // 人名ホットワード
       const { text, segments } = await getFw().transcribe(filePath, {
-        lang: process.env.WHISPER_LANG || 'ja',
+        lang: WHISPER_LANG,
+        prompt: hotwordPrompt || undefined,
       });
-      const t = filterSegments(segments) || (text || '').trim();
-      return stripClosers(t || '') || null;
+      const t = (Array.isArray(segments) && segments.length) ? segments.map(s => s.text || '').join('') : (text || '');
+      return sanitizeFinal(stripClosers(t || '')) || null;
     } catch (e) {
-      console.warn('[faster][worker] failed, fallback to existing path:', e?.message || e);
-      // このプロセス生存中はワーカー経路を封印（クラッシュループを防ぐ）
-      fwWorkerDisabled = true;
-      // 以降は既存ルートへフォールバック
+      console.warn('[faster][worker] failed, fallback:', e?.message || e);
+      fwWorkerDisabled = true; // クラッシュループ回避
     }
   }
 
+  // 2) CLI 経路
   if (IMPL === 'faster') {
-    // 2) faster-whisper を選択している場合はまず試す
     try {
       await runFasterWhisper(filePath, outDir);
       usedImpl = 'faster';
-    } catch (e) {
-      if (DEBUG) console.warn('[faster] failed, fallback to whisper:', e?.message || e);
-      // フォールバック（whisper → cuda → cpu）
-      try {
-        await runWhisperOnce('cuda', filePath, outDir);
-      } catch (e1) {
-        if (DEBUG) console.warn('[whisper] cuda failed; fallback to cpu:', e1?.message || e1);
-        try {
-          await runWhisperOnce('cpu', filePath, outDir);
-        } catch (e2) {
-          console.error('[whisper] cpu fallback also failed:', e2?.message || e2);
-          return null;
-        }
+    } catch {
+      try { await runWhisperOnce('cuda', filePath, outDir); }
+      catch (e1) {
+        if (DEBUG) console.warn('[whisper] cuda failed; cpu fallback:', e1?.message || e1);
+        try { await runWhisperOnce('cpu', filePath, outDir); }
+        catch (e2) { console.error('[whisper] cpu fallback also failed:', e2?.message || e2); return null; }
       }
       usedImpl = 'whisper';
     }
   } else {
-    // 3) IMPL=whisper の場合は従来どおり
-    try {
-      await runWhisperOnce('cuda', filePath, outDir);
-    } catch (e1) {
-      if (DEBUG) console.warn('[whisper] cuda failed; fallback to cpu:', e1?.message || e1);
-      try {
-        await runWhisperOnce('cpu', filePath, outDir);
-      } catch (e2) {
-        console.error('[whisper] cpu fallback also failed:', e2?.message || e2);
-        return null;
-      }
+    try { await runWhisperOnce('cuda', filePath, outDir); }
+    catch (e1) {
+      if (DEBUG) console.warn('[whisper] cuda failed; cpu fallback:', e1?.message || e1);
+      try { await runWhisperOnce('cpu', filePath, outDir); }
+      catch (e2) { console.error('[whisper] cpu fallback also failed:', e2?.message || e2); return null; }
     }
     usedImpl = 'whisper';
   }
 
-  // 取り出し（JSON）
+  // 3) 結果取り出し
   let text = null;
   if (fs.existsSync(jsonPath)) {
     try {
       const j = JSON.parse(fs.readFileSync(jsonPath, 'utf8'));
-      if (Array.isArray(j?.segments)) text = filterSegments(j.segments);
-      else if (typeof j?.text === 'string') text = j.text.trim();
+      text = Array.isArray(j?.segments) ? j.segments.map(s => s.text || '').join('') : (j?.text || '');
     } catch (e) {
       if (DEBUG) console.warn('[whisper] json parse failed:', e?.message || e);
     } finally {
-      if (process.env.WHISPER_KEEP_JSON !== '1') {
-        try { fs.unlinkSync(jsonPath); } catch { /* noop */ }
-      }
+      if (process.env.WHISPER_KEEP_JSON !== '1') { try { fs.unlinkSync(jsonPath); } catch { } }
     }
   }
-
-  // 念のため .txt フォールバック（互換）
   if (!text) {
     const txtPath = path.join(outDir, `${base}.txt`);
     if (fs.existsSync(txtPath)) {
-      try { text = fs.readFileSync(txtPath, 'utf8').trim(); } catch { /* noop */ }
-      if (process.env.WHISPER_KEEP_TXT !== '1') {
-        try { fs.unlinkSync(txtPath); } catch { /* noop */ }
-      }
+      try { text = fs.readFileSync(txtPath, 'utf8').trim(); } catch { }
+      if (process.env.WHISPER_KEEP_TXT !== '1') { try { fs.unlinkSync(txtPath); } catch { } }
     }
   }
 
-  function sanitizeRepeats(text) {
-    if (!text) return text;
-    const hints = (process.env.ASR_HINTS || '')
-      .split(',')
-      .map(s => s.trim())
-      .filter(Boolean);
-
-    let out = text;
-
-    // 1) ヒント語が「4回以上」連なるとき、最大2回に畳む（区切りは空白/読点/カンマを許容）
-    const sep = String.raw`[\s、,]*`;
-    for (const h of hints) {
-      if (!h) continue;
-      const esc = h.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // 正規表現エスケープ
-      const re = new RegExp(`(?:${esc}${sep}){4,}`, 'g');
-      out = out.replace(re, `${h}、${h}`);
-    }
-
-    // 2) 任意語の“機械連呼”も保険で畳む（同一トークン6連以上 → 2回に）
-    out = out.replace(/(\S+)(?:\s*\1){5,}/g, '$1 $1');
-
-    return out;
-  }
-
-  text = sanitizeRepeats(stripClosers(text || ''));
-  text = applyUserDictionary(text);
+  text = sanitizeFinal(stripClosers(text || ''));
   if (DEBUG) console.info('[asr] impl:', usedImpl, ' / text:', text);
   return text || null;
 }
 
 export async function transcribeAudioGPUStream(filePath, { onPartial } = {}) {
-  // ワーカーが有効なら逐次
-  if (USE_FW_WORKER) {
+  if (USE_FW_WORKER && !fwWorkerDisabled) {
     const fw = getFw();
     try {
-      let finalText = '';
-      finalText = await fw.transcribeStream(
-        filePath,
-        { lang: process.env.WHISPER_LANG || 'ja' },
-        {
-          onPartial: (p) => {
-            // p.text を都度 Append で上げる
-            onPartial?.(String(p.text || ''));
-          },
-          onFinal: () => { /* no-op */ },
-        }
-      );
-      return finalText || null;
+      // ストリーム対応を後日入れる場合のフック（今はバッチに近い挙動）
+      const { text } = await fw.transcribe(filePath, { lang: WHISPER_LANG });
+      onPartial?.(text || '');
+      return text || null;
     } catch (e) {
       console.warn('[asr stream] failed, fallback to batch:', e?.message || e);
-      // バッチへ
     }
   }
-  // フォールバック：従来バッチ
   return await transcribeAudioGPU(filePath);
 }

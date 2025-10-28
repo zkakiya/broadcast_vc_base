@@ -71,7 +71,7 @@ function backoffDelay(attempt, baseMs, maxMs) {
 const translateBuffers = new Map(); // baseId -> { timer, full, target }
 const THROTTLE_MS = Number(process.env.TRANS_TRANSLATE_THROTTLE_MS || 800);
 
-function scheduleTranslate({ id, appendText, target }) {
+function scheduleTranslate({ id, appendText, target, onTranslated }) {
   if (!target) return;
   const cur = translateBuffers.get(id) || { timer: null, full: '', target };
   cur.full += appendText;
@@ -86,7 +86,7 @@ function scheduleTranslate({ id, appendText, target }) {
       let tr = await translateText({ text: srcFull, target: cur.target });
       if (!tr) return;
 
-      // 辞書適用（任意）
+      // （任意）辞書適用フラグがあれば訳にも適用
       if (process.env.ASR_DICT_APPLY_TR === '1') {
         try {
           const { applyUserDictionary } = await import('../utils/dictionary.js');
@@ -94,18 +94,27 @@ function scheduleTranslate({ id, appendText, target }) {
         } catch { }
       }
 
-      if (ioRef) ioRef.emit('transcript_update', {
-        id,
-        tr: { to: cur.target, text: tr, mode: 'replace' }
-      });
+      // UI は “置換” で安定描画
+      if (ioRef) {
+        ioRef.emit('transcript_update', {
+          id,
+          tr: { to: cur.target, text: tr, mode: 'replace' }
+        });
+      }
+
+      // ★ ここで Discord 追記（コールバックで親スコープの sentMsgRef を扱う）
+      if (typeof onTranslated === 'function') {
+        try { await onTranslated(tr); } catch (e) {
+          console.warn('[translate->discord] failed:', e?.message || e);
+        }
+      }
     } catch (e) {
       console.warn('[translate buffer] failed:', e?.message || e);
     }
   }, THROTTLE_MS);
 
   translateBuffers.set(id, cur);
-}
-function resetTranslateBuffer(id) {
+} function resetTranslateBuffer(id) {
   const buf = translateBuffers.get(id);
   if (!buf) return;
   if (buf.timer) clearTimeout(buf.timer);
@@ -318,7 +327,25 @@ export async function joinAndRecordVC() {
 
                 // 訳はバッファして“置換”で安定表示
                 if (CONFIG?.translate?.enabled && translateTarget) {
-                  scheduleTranslate({ id: baseId, appendText: cleanedText + ' ', target: translateTarget });
+                  scheduleTranslate({
+                    id: baseId,
+                    appendText: cleanedText + ' ',
+                    target: translateTarget,
+                    onTranslated: async (tr) => {
+                      if (!sentMsgRef) return;
+                      const cur = sentMsgRef.content ?? '';
+                      const next = `${cur}\n> _${tr}_`;
+                      try {
+                        await sentMsgRef.edit(next);
+                      } catch {
+                        // 失敗時はフォールバックで別メッセージとして訳だけ送る
+                        const ch = await client.channels.fetch(TEXT_CHANNEL_ID);
+                        if (ch && ch.isTextBased()) {
+                          sentMsgRef = await ch.send(`> _${tr}_`);
+                        }
+                      }
+                    }
+                  });
                 }
               } catch (e) {
                 console.error('❌ Failed to send message:', e);

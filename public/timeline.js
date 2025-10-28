@@ -1,13 +1,16 @@
-// public/timeline.js
 (() => {
   const socket = io();
   const root = document.getElementById('timeline');
   const q = new URLSearchParams(location.search);
   const limit = Number(q.get('limit') || 10);
-  const pfpMode = (q.get('pfp') || 'none');    // 'none' | 'icon' | 'avatar'
+  const pfpMode = (q.get('pfp') || 'none'); // 'none'|'icon'|'avatar'
   const pfpSize = Number(q.get('avatar') || 48);
-  const entries = [];
 
+  // すべてのエントリを id で集約
+  /** @type {Map<string, {id:string,userId?:string,name?:string,side?:'left'|'right',color?:string,avatar?:string,icon?:string,text:string,tr?:{to?:string,text?:string,mode?:'replace'}, revUpdated:number,trUpdated:number,ts?:number}>} */
+  const entriesById = new Map();
+
+  // 左右デフォルト決定
   function normSide(e) {
     const s = String(e.side || '').toLowerCase();
     if (s === 'l' || s === 'left') return 'left';
@@ -17,13 +20,87 @@
     return (h & 1) === 0 ? 'left' : 'right';
   }
 
+  // 既存とマージ（本文 or 訳の後勝ち制御）
+  function upsertEntry(partial, kind) {
+    const now = Date.now();
+    const id = String(partial.id || '');
+    if (!id) return;
+
+    const cur = entriesById.get(id) || {
+      id, text: '',
+      revUpdated: 0,
+      trUpdated: 0,
+    };
+
+    // ベース属性は最初に来た情報を保持、以降は空でないものだけ上書き
+    const fields = ['userId', 'name', 'side', 'color', 'avatar', 'icon', 'ts'];
+    for (const f of fields) {
+      if (partial[f] !== undefined && partial[f] !== null) cur[f] = partial[f];
+    }
+    cur.side = normSide(cur);
+
+    if (kind === 'transcript') {
+      // 本文は “そのまま差し替え”（サーバが flush 分をまとめてくる想定）
+      // または初回 flush 用。新しい更新だけ採用。
+      const revTs = Number(partial.ts || now);
+      if (revTs >= cur.revUpdated) {
+        cur.text = String(partial.text || '');
+        cur.revUpdated = revTs;
+      }
+    } else if (kind === 'append') {
+      // 追記は本文に追加。本文更新時刻を上げる。
+      cur.text = (cur.text || '') + String(partial.append || '');
+      cur.revUpdated = now;
+    }
+
+    if (partial.tr) {
+      // 訳更新（replace/append いずれも “新しい更新だけ” 反映）
+      // transcript_update が out-of-order でも trUpdated で守る
+      const trTs = now;
+      if (trTs >= cur.trUpdated) {
+        if (partial.tr.mode === 'replace') {
+          cur.tr = { ...partial.tr };
+        } else {
+          // append 指定が来る可能性も一応考慮
+          const prev = cur.tr?.text || '';
+          cur.tr = { ...partial.tr, text: prev + String(partial.tr.text || '') };
+        }
+        cur.trUpdated = trTs;
+      }
+    }
+
+    entriesById.set(id, cur);
+    requestRender();
+  }
+
+  // 表示配列を作る（更新時刻でソートして末尾 limit 件）
+  function materialize() {
+    const arr = Array.from(entriesById.values());
+    // ソートキー: ts (初回) / revUpdated / trUpdated の最大
+    arr.sort((a, b) => {
+      const ta = Math.max(a.ts || 0, a.revUpdated || 0, a.trUpdated || 0);
+      const tb = Math.max(b.ts || 0, b.revUpdated || 0, b.trUpdated || 0);
+      return ta - tb;
+    });
+    return arr.slice(-limit);
+  }
+
+  let needRender = false;
+  function requestRender() {
+    if (needRender) return;
+    needRender = true;
+    requestAnimationFrame(() => {
+      needRender = false;
+      render();
+    });
+  }
+
   function render() {
+    const items = materialize();
     root.innerHTML = '';
-    const items = entries.slice(-limit);
     for (const e of items) {
       const row = document.createElement('div');
       row.className = `entry side-${e.side || 'left'}`;
-      row.dataset.id = e.id;
 
       const src = pfpMode === 'icon' ? (e.icon || e.avatar)
         : pfpMode === 'avatar' ? (e.avatar || e.icon) : null;
@@ -51,53 +128,42 @@
       text.textContent = e.text || '';
       bubble.appendChild(text);
 
-      const trEl = document.createElement('div');
-      trEl.className = 'tr';
-      trEl.textContent = e.tr?.text || '';
-      bubble.appendChild(trEl);
+      if (e.tr?.text) {
+        const tr = document.createElement('div');
+        tr.className = 'tr';
+        tr.textContent = e.tr.text;
+        bubble.appendChild(tr);
+      }
 
       row.appendChild(bubble);
       root.appendChild(row);
     }
+    // 末尾へオートスクロール
     root.scrollTop = root.scrollHeight;
   }
 
+  // --- ソケットイベント ---
   socket.on('transcript', (payload) => {
-    entries.push({
-      ...payload,
-      side: normSide(payload),
-      tr: payload.tr ? { ...payload.tr } : undefined,
-      text: payload.text || ''
-    });
-    render();
+    // 初回 flush（または差し替え）が来る
+    upsertEntry(payload, 'transcript');
   });
 
-  // append / replace（翻訳）/ append（翻訳）
-  socket.on('transcript_update', ({ id, append, tr }) => {
+  socket.on('transcript_update', (payload) => {
+    const { id, append, tr } = payload || {};
     if (!id) return;
-    const idx = entries.findIndex(e => e.id === id);
-    if (idx < 0) return;
-
-    const e = entries[idx];
-
-    if (typeof append === 'string' && append.length) {
-      e.text = (e.text || '') + append;
+    if (append) {
+      upsertEntry({ id, append }, 'append');
     }
-    if (tr && typeof tr.text === 'string') {
-      const mode = tr.mode || 'append';
-      const to = tr.to;
-      if (!e.tr) e.tr = { to, text: '' };
-      if (mode === 'replace') {
-        e.tr = { to, text: tr.text };
-      } else {
-        e.tr = { to, text: (e.tr.text || '') + tr.text };
-      }
+    if (tr) {
+      upsertEntry({ id, tr }, 'update'); // 訳の更新は常に “新しい方だけ” 反映
     }
-    entries[idx] = e;
-    render();
   });
 
+  // 運用ショートカット
   window.addEventListener('keydown', (e) => {
-    if (e.key === 'c') { entries.length = 0; render(); }
+    if (e.key === 'c') {
+      entriesById.clear();
+      requestRender();
+    }
   });
 })();

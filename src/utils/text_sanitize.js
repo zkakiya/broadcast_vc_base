@@ -87,3 +87,78 @@ export function canonicalizeForDup(text) {
         .replace(/[、。,．，。]/g, '')
         .toLowerCase();
 }
+
+function toKatakana(s) {
+    // ひらがな→カタカナ。全角英数はそのまま。長音・中黒・スペースは除去。
+    const ZEN_LONG = /[ー−ｰ]/g;
+    const ZEN_MID = /[・･]/g;
+    let out = '';
+    for (const ch of s) {
+        const code = ch.codePointAt(0);
+        // ひらがな → カタカナ
+        if (code >= 0x3041 && code <= 0x3096) {
+            out += String.fromCodePoint(code + 0x60);
+        } else if (/[ぁ-んァ-ンｧ-ﾝA-Za-z0-9一-龥々]/.test(ch)) {
+            out += ch;
+        }
+    }
+    return out.replace(ZEN_LONG, '').replace(ZEN_MID, '').replace(/\s+/g, '');
+}
+
+function levenshtein(a, b) {
+    const m = a.length, n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+    for (let i = 0; i <= m; i++) dp[i][0] = i;
+    for (let j = 0; j <= n; j++) dp[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+            dp[i][j] = Math.min(
+                dp[i - 1][j] + 1,
+                dp[i][j - 1] + 1,
+                dp[i - 1][j - 1] + cost
+            );
+        }
+    }
+    return dp[m][n];
+}
+
+export function fuzzyPeopleReplace(text, peopleDict, { maxDist = 1, minLen = 2 } = {}) {
+    if (!text) return text;
+    if (!peopleDict || !peopleDict.length) return text;
+
+    // 置換候補（正→正規化）を用意
+    const canonList = [];
+    for (const p of peopleDict) {
+        const canonical = String(p.name || '').trim();
+        if (!canonical) continue;
+        const aliases = [canonical, ...(p.aliases || [])].map(s => String(s).trim()).filter(Boolean);
+        for (const name of aliases) {
+            const kata = toKatakana(name);
+            if (kata.length >= minLen) canonList.push({ name, kata });
+        }
+    }
+    if (!canonList.length) return text;
+
+    // 簡易トークン分割（日本語+記号境界をざっくり）
+    return text.replace(/[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}A-Za-z0-9]+/gu, (token) => {
+        const tk = toKatakana(token);
+        if (tk.length < minLen) return token;
+
+        let best = null;
+        for (const c of canonList) {
+            const d = levenshtein(tk, c.kata);
+            if (d <= maxDist) {
+                const sim = 1 - d / Math.max(tk.length, c.kata.length);
+                if (!best || sim > best.sim) best = { ...c, d, sim };
+            }
+        }
+        if (best && (best.d <= maxDist || best.sim >= 0.85)) {
+            // “最も近い”ものに置換（元の大小や句読点は維持）
+            return best.name;
+        }
+        return token;
+    });
+}
