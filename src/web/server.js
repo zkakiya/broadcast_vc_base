@@ -36,7 +36,7 @@ app.get('/healthz', async (_req, res) => {
 });
 
 // 起動
-export function startWebServer(port = CFG.webPort) {
+export function startWebServer(port = CFG.port) {
   httpServer.listen(port, () => {
     console.log(`🌍 Subtitles page: http://localhost:${port}/`);
   });

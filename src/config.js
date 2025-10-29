@@ -1,26 +1,23 @@
-// src/config.js
-// Refactor v1 - step 1: centralize configuration & validation
-// Usage:
-//   import { CFG, assertConfig } from './config.js';
-//   assertConfig();
 import './env/load.js';
 
-function bool(v, d=false) {
+function bool(v, d = false) {
   if (v === undefined || v === null || v === '') return d;
-  return ['1','true','yes','on'].includes(String(v).trim().toLowerCase());
+  return ['1', 'true', 'yes', 'on'].includes(String(v).trim().toLowerCase());
 }
 function num(v, d) {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
 }
-function csv(v='') {
-  return String(v).split(',').map(s=>s.trim()).filter(Boolean);
+function csv(v = '') {
+  return String(v).split(',').map(s => s.trim()).filter(Boolean);
 }
 
 export const CFG = {
   mode: process.env.MODE || 'multi',
   port: num(process.env.PORT, 8080),
+  webPort: num(process.env.WEB_PORT || process.env.PORT, 8080),
   wsPort: num(process.env.WS_PORT, 8081),
+  clean: process.env.CLEAN_DIR ?? null,
   discord: {
     token: process.env.DISCORD_TOKEN,
     guildId: process.env.GUILD_ID,
@@ -41,12 +38,13 @@ export const CFG = {
     deeplKey: process.env.DEEPL_API_KEY,
     azureKey: process.env.AZURE_TRANSLATOR_KEY,
     azureRegion: process.env.AZURE_TRANSLATOR_REGION,
+    enabled: bool(process.env.TRANS_TRANSLATE_ENABLED, true),
+    defaultTarget: process.env.TRANS_DEFAULT_TARGET || null,
   },
   flags: {
     dictApplyTr: bool(process.env.ASR_DICT_APPLY_TR, true),
   },
   metrics: {
-    // for future model auto-switch
     window: num(process.env.METRICS_WINDOW, 20),
     switchUpMs: num(process.env.ASR_SWITCH_UP_MS, 900),
     switchDownMs: num(process.env.ASR_SWITCH_DOWN_MS, 700),
