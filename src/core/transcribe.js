@@ -77,7 +77,8 @@ function probeCuda() {
     console.warn('[whisper][probe] failed:', e?.message || e);
   }
 }
-probeCuda();
+
+export const probeWhisper = probeCuda;
 
 // === 実行系：faster-whisper & Whisper CLI ===================================
 async function runFasterWhisper(filePath, outDir) {

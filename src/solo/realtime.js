@@ -13,19 +13,18 @@ export function setIo(io) { ioRef = io; }
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const recDir = path.join(__dirname, '../recordings');
-if (!fs.existsSync(recDir)) fs.mkdirSync(recDir, { recursive: true });
 
 // ---- ENV ----
-const PORT = Number(process.env.SOLO_TCP_PORT || 52000);
-const SR = Number(process.env.SOLO_SR || 16000);
-const CH = Number(process.env.SOLO_CH || 1);
+const PORT = CFG.solo.tcpPort;
+const SR = CFG.solo.sampleRate;
+const CH = CFG.solo.channels;
 
-const VAD_FRAME_MS = Number(process.env.VAD_FRAME_MS || 20);
-const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 300);
-const VAD_RMS_TH = Number(process.env.VAD_RMS_THRESHOLD || 800);
+const VAD_FRAME_MS = CFG.asr.vadFrameMs;
+const VAD_SILENCE_MS = CFG.asr.vadSilenceMs;      // ※デフォルト350ms（旧コードでは300ms）
+const VAD_RMS_TH = CFG.asr.vadRmsThreshold;
 
-const SEG_MIN_MS = Number(process.env.SEG_MIN_MS || 800);
-const SEG_MAX_MS = Number(process.env.SEG_MAX_MS || 2200);
+const SEG_MIN_MS = CFG.asr.segMinMs;
+const SEG_MAX_MS = CFG.asr.segMaxMs;
 
 const SOLO = {
     userId: process.env.SOLO_USER_ID || 'solo',

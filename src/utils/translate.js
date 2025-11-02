@@ -2,7 +2,7 @@
 import { CFG } from '../config.js';
 
 const hasOpenAI = !!process.env.OPENAI_API_KEY;
-const hasDeepL = !!process.env.DEEPL_API_KEY;
+const hasDeepL = !!CFG.translate.deeplKey;
 const hasLibre = !!process.env.LIBRETRANSLATE_URL;
 
 export async function translateText({ text, source, target }) {
@@ -54,7 +54,7 @@ async function translateDeepL(text, source, target) {
   if (source) params.set('source_lang', source.toUpperCase().replace('-', '_'));
   const r = await fetch(url, {
     method: 'POST',
-    headers: { Authorization: `DeepL-Auth-Key ${process.env.DEEPL_API_KEY}` },
+    headers: { Authorization: `DeepL-Auth-Key ${CFG.translate.deeplKey}` },
     body: params,
   });
   if (!r.ok) throw new Error(`DeepL ${r.status}`);

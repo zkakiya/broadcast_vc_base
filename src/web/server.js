@@ -21,10 +21,7 @@ const pubDir = path.join(__dirname, '../../public');
 app.get('/', (_, res) => res.redirect('/now.html'));
 app.use(express.static(pubDir));
 
-// 既存: 軽量ヘルスチェック
-app.get('/healthz', (_, res) => res.send('ok'));
-
-// 追加: 詳細ステータス（新）
+// ヘルスチェック
 app.get('/healthz', async (_req, res) => {
   res.json({
     ok: true,
@@ -34,7 +31,6 @@ app.get('/healthz', async (_req, res) => {
     translate: { provider: CFG.translate.provider },
   });
 });
-
 // 起動
 export function startWebServer(port = CFG.port) {
   httpServer.listen(port, () => {

@@ -12,12 +12,15 @@ import {
   EndBehaviorType,
 } from '@discordjs/voice';
 
-import { client, GUILD_ID, VOICE_CHANNEL_ID, TEXT_CHANNEL_ID } from './client.js';
+import { client } from './client.js';
+import { CFG } from '../config.js';
+const GUILD_ID = CFG.discord.guildId;
+const VOICE_CHANNEL_ID = CFG.discord.voiceChannelId;
+const TEXT_CHANNEL_ID = CFG.discord.textChannelId;
 import { transcribeAudioGPU } from '../core/transcribe.js';
 let ioRef = null;
 export function setIo(io) { ioRef = io; }
 import { getSpeaker } from '../registry/speakers.js';
-import { CFG } from '../config.js';
 import { translateText } from '../utils/translate.js';
 import { sanitizeASR, canonicalizeForDup } from '../utils/text_sanitize.js';
 
@@ -28,18 +31,17 @@ import { getPersonProtectSet } from '../utils/dictionary.js';
 let currentConnection = null;
 let isReconnecting = false;
 
-// ── 低遅延向けパラメータ（ENVで上書き可） ────────────────
-const VAD_SILENCE_MS = Number(process.env.VAD_SILENCE_MS || 350);
-const UTTER_MAX_MS = Number(process.env.UTTER_MAX_MS || 3000);
-const SEG_GAP_MS = Number(process.env.SEG_GAP_MS || 80);
+// ── 低遅延向けパラメータ（CFGから取得） ────────────────
+const VAD_SILENCE_MS = CFG.asr.vadSilenceMs;
+const UTTER_MAX_MS = CFG.asr.utterMaxMs;
+const SEG_GAP_MS = CFG.asr.segGapMs;
 
 // __dirname (ESM)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// 録音ディレクトリは src/recordings に固定
+// 録音ディレクトリの作成は録音開始時に実施（ここでは実行しない）
 const recordingsDir = path.join(__dirname, '../recordings');
-if (!fs.existsSync(recordingsDir)) fs.mkdirSync(recordingsDir, { recursive: true });
 
 // ── 重複発火/多重送信ガード ──────────────────────────────
 const activeSessions = new Map();  // userId -> { closing: boolean }
@@ -47,8 +49,8 @@ const lastTexts = new Map();  // userId -> { text, ts }
 
 // userIdごとに最近のフレーズを保持して“ほぼ同じ”を弾く
 const recentPhraseMap = new Map(); // userId -> Array<{canon:string, ts:number}>
-const PHRASE_WINDOW_MS = Number(process.env.ASR_PHRASE_WINDOW_MS || 4000); // 4秒窓
-const PHRASE_MAX_KEEP = Number(process.env.ASR_PHRASE_MAX_KEEP || 8);      // バッファ長
+const PHRASE_WINDOW_MS = CFG.asr.phraseWindowMs;
+const PHRASE_MAX_KEEP = CFG.asr.phraseMaxKeep;
 
 // ── Whisper直列実行（負荷スパイク抑制） ───────────────────
 import { createLimiter } from '../utils/limiter.js';
@@ -69,7 +71,7 @@ function backoffDelay(attempt, baseMs, maxMs) {
 
 // ── 翻訳バッファ：全文“置換”で安定描画 ───────────────────────
 const translateBuffers = new Map(); // baseId -> { timer, full, target }
-const THROTTLE_MS = Number(process.env.TRANS_TRANSLATE_THROTTLE_MS || 800);
+const THROTTLE_MS = CFG.translate.throttleMs;
 
 function scheduleTranslate({ id, appendText, target, onTranslated }) {
   if (!target) return;
@@ -86,14 +88,13 @@ function scheduleTranslate({ id, appendText, target, onTranslated }) {
       let tr = await translateText({ text: srcFull, target: cur.target });
       if (!tr) return;
 
-      // （任意）辞書適用フラグがあれば訳にも適用
-      if (process.env.ASR_DICT_APPLY_TR === '1') {
+      // （任意）辞書適用フラグに応じて訳にもユーザー辞書を適用
+      if (CFG.flags.dictApplyTr) {
         try {
           const { applyUserDictionary } = await import('../utils/dictionary.js');
           tr = applyUserDictionary(tr);
         } catch { }
       }
-
       // UI は “置換” で安定描画
       if (ioRef) {
         ioRef.emit('transcript_update', {
@@ -123,12 +124,16 @@ function scheduleTranslate({ id, appendText, target, onTranslated }) {
 
 // ── 本体 ───────────────────────────────────────────────────
 export async function joinAndRecordVC() {
+  console.debug('[debug] VOICE_CHANNEL_ID:', CFG.discord.voiceChannelId);
+
   if (!client.user) {
     await new Promise(res => client.once('clientReady', res));
   }
-  const guild = await client.guilds.fetch(GUILD_ID);
-  if (!guild) throw new Error('Guild not found');
-
+  const guild = client.guilds.cache.get(CFG.discord.guildId);
+  if (!guild) {
+    console.error('[error] Guild not found. Check GUILD_ID.');
+    return;
+  }
   const voiceChannel = await guild.channels.fetch(VOICE_CHANNEL_ID);
   if (!voiceChannel) throw new Error('Voice channel not found');
 
@@ -158,7 +163,7 @@ export async function joinAndRecordVC() {
       connection.on('error', (err) => {
         console.error('[voice] connection error:', err?.message || err);
       });
-      const VOICE_DEBUG = process.env.VOICE_DEBUG === '1';
+      const VOICE_DEBUG = CFG.flags.voiceDebug;
       connection.on('stateChange', async (oldS, newS) => {
         if (VOICE_DEBUG) console.log(`[voice] state ${oldS.status} -> ${newS.status}`);
         if (newS.status === VoiceConnectionStatus.Disconnected && !isReconnecting) {
@@ -313,7 +318,7 @@ export async function joinAndRecordVC() {
 
               // Discord 原文
               try {
-                const textChannel = await client.channels.fetch(TEXT_CHANNEL_ID);
+                const textChannel = await client.channels.fetch(CFG.discord.textChannelId);
                 if (textChannel && textChannel.isTextBased()) {
                   if (!sentMsgRef) {
                     sentMsgRef = await textChannel.send(`**${speakerName}**: ${cleanedText}`);
