@@ -11,18 +11,19 @@ const __dirname = path.dirname(__filename);
 // Express
 const app = express();
 const httpServer = createServer(app);
+
+// Socket.IO
 export const io = new SocketIOServer(httpServer, {
   cors: { origin: CFG.corsOrigin || '*' },
 });
 
-// 静的配信（OBS はこのURLをブラウザソースで開く）
+// 静的ファイルの配信（例: now.html）
 const pubDir = path.join(__dirname, '../../public');
-// ルートを先に握る（ index.html があっても確実に now.html を出す ）
 app.get('/', (_, res) => res.redirect('/now.html'));
 app.use(express.static(pubDir));
 
-// ヘルスチェック
-app.get('/healthz', async (_req, res) => {
+// ヘルスチェックエンドポイント
+app.get('/healthz', (_req, res) => {
   res.json({
     ok: true,
     mode: CFG.mode,
@@ -31,7 +32,8 @@ app.get('/healthz', async (_req, res) => {
     translate: { provider: CFG.translate.provider },
   });
 });
-// 起動
+
+// 起動関数
 export function startWebServer(port = CFG.port) {
   httpServer.listen(port, () => {
     console.log(`🌍 Subtitles page: http://localhost:${port}/`);
