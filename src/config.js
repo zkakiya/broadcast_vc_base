@@ -21,7 +21,7 @@ export const CFG = {
   discord: {
     token: process.env.DISCORD_TOKEN,
     guildId: process.env.GUILD_ID,
-    voiceChannelId: process.env.VOICE_CH_ID,
+    voiceChannelId: process.env.VOICE_CHANNEL_ID,
   },
   asr: {
     impl: process.env.WHISPER_IMPL || 'faster',
