@@ -7,14 +7,20 @@
     --name: #e9f0f6;
     --tr-accent: #4a90e2;
 
+    --avatar-height-base: 70vh;
     --pfp-size: 86px;
-    --pfp-inactive: 0.45;
+    /* 待機時の暗さをトーンで調整（必要ならここだけ変えればOK） */
+    --pfp-dim-brightness: 0.62;
+    /* 0.5～0.75 くらいが目安 */
+    --pfp-dim-contrast: 0.92;
+    --pfp-dim-saturate: 0.85;
 }
 
 /* ベース */
 html,
 body {
-    height: 100%
+    height: 100vh;
+    width: 100vw;
 }
 
 body {
@@ -26,23 +32,23 @@ body {
 
 /* アバターデッキ（共通） */
 #avatars {
-    position: relative;
-    height: var(--pfp-size);
-    width: 100%;
+    position: fixed;
+    height: 100vh;
+    width: 100vw;
 }
 
 .deck-avatar {
     border-radius: 12px;
     box-shadow: 0 8px 24px rgba(0, 0, 0, .25);
-    height: var(--pfp-size);
-    width: var(--pfp-size);
+    height: var(--avatar-height-base);
+    width: auto;
     object-fit: cover;
     position: absolute;
     left: 0;
     top: 0;
     transform: translate(-50%, -50%) scale(var(--pfp-scale, var(--scale, 1)));
     transform-origin: center;
-    transition: opacity .25s ease, filter .25s ease, transform .25s ease, box-shadow .25s ease;
+    transition: filter .25s ease, transform .25s ease, box-shadow .25s ease;
 }
 
 .deck-avatar.dimmed {
@@ -50,9 +56,10 @@ body {
     opacity: var(--pfp-inactive);
 }
 
-.deck-avatar.active {
-    filter: none;
-    opacity: 1;
+.deck-avatar.dimmed {
+    /* “暗めエフェクト”。半透明は使わない */
+    filter:
+        brightness(var(--pfp-dim-brightness)) contrast(var(--pfp-dim-contrast)) saturate(var(--pfp-dim-saturate)) grayscale(8%);
 }
 
 /* ユーティリティ */

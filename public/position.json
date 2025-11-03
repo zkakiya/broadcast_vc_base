@@ -1,7 +1,7 @@
 {
     "272380840434991104": {
-        "x": 78,
-        "y": 41,
+        "x": 98,
+        "y": 77,
         "scale": 1.0,
         "src": "/avatars/kakiya_still.png",
         "name": "カキヤ",
@@ -9,8 +9,8 @@
         "color": "#AA8555"
     },
     "463714335596740638": {
-        "x": -10,
-        "y": 5,
+        "x": 4,
+        "y": 40,
         "scale": 1.05,
         "src": "/avatars/yoneda_still.png",
         "name": "ヨネダ",
@@ -18,8 +18,8 @@
         "color": "#d85"
     },
     "682709913335890031": {
-        "x": -20,
-        "y": 35,
+        "x": 2,
+        "y": 72,
         "scale": 1.1,
         "src": "/avatars/haracternick_still.png",
         "name": "Haracternick",
