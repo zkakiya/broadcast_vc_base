@@ -1,3 +1,4 @@
+// src/web/server.js
 import express from 'express';
 import { createServer } from 'http';
 import { Server as SocketIOServer } from 'socket.io';
@@ -33,9 +34,10 @@ app.get('/healthz', (_req, res) => {
   });
 });
 
-// 起動関数
+// 起動関数（⚠️ io を返すように変更）
 export function startWebServer(port = CFG.port) {
   httpServer.listen(port, () => {
     console.log(`🌍 Subtitles page: http://localhost:${port}/`);
   });
+  return io;
 }
