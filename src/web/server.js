@@ -41,3 +41,11 @@ export function startWebServer(port = CFG.port) {
   });
   return io;
 }
+
+app.use(express.static(pubDir, {
+  maxAge: '7d',
+  etag: true,
+  setHeaders: (res, p) => {
+    if (p.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+  },
+}));

@@ -3,22 +3,22 @@
 
 <head>
   <meta charset="utf-8" />
-  <title>Latest Bubble View</title>
+  <title>Broadcast VC — Latest</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="/now.css">
-  <script>
-    window.VIEW_MODE = 'latest';
-  </script>
+  <!-- ページはCSSに依存するだけ。スタイルは /css に分離 -->
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/latest.css">
 </head>
 
-<body data-view="latest">
-  <div id="safe-area">
-    <!-- アバターは非表示 -->
-    <div id="avatars" style="display:none"></div>
-    <div id="now" class="bubble is-fading"></div>
-  </div>
+<body>
+  <!-- <div id="avatars"></div> -->
+  <div id="now" class="bubble is-fading"></div>
+
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/now.js"></script>
+  <!-- 共通ロジック（Socket, position, avatars, fade） -->
+  <script src="/app.js"></script>
+  <!-- 最新バブル専用の最小ロジック -->
+  <script src="/latest.js"></script>
 </body>
 
 </html>

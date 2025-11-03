@@ -78,7 +78,6 @@ export async function joinAndRecordVC() {
         adapterCreator: guild.voiceAdapterCreator,
         selfDeaf: false,
         selfMute: false,
-        preferredEncryptionMode: 'aead_xchacha20_poly1305_rtpsize',
       });
       currentConnection = connection;
 
