@@ -15,16 +15,18 @@ function loadIfExists(p) {
     return false;
 }
 
-// 1) まず .env（最下層の既定）
-loadIfExists(path.resolve('.env'));
+// 1) まず .env（最下層の既定）※既存の環境変数を上書きしない
+if (fs.existsSync(path.resolve('.env'))) {
+    dotenv.config({ path: path.resolve('.env'), override: false });
+    console.log('[env] loaded: .env');
+}
 
-// MODE は事前に決める（既に .env で決まっていればそれを優先）
-const MODE = (process.env.MODE || '').toLowerCase() || 'multi';
+const MODE = (process.env.MODE || 'multi').toLowerCase();
 
-// 2) 共有
+// 2) 共有設定を上書き読み込み
 loadIfExists(path.resolve('apps/.env.shared'));
 
-// 3) モード別（最後に読み込み＝ここが最優先）
+// 3) モード別の設定をさらに上書き
 loadIfExists(path.resolve(`apps/.env.${MODE}`));
 
 // 参考ログ（必要に応じて消せます）

@@ -8,7 +8,7 @@ import { translateText } from '../utils/translate.js';
 let ioRef = null;
 export function setIo(io) { ioRef = io; }
 
-const INBOX = process.env.SOLO_INPUT_DIR || path.join(process.cwd(), 'src/solo/inbox');
+const INBOX = process.env.SOLO_INPUT_DIR || path.resolve('src/solo/inbox');
 
 const SOLO = {
     userId: process.env.SOLO_USER_ID || 'solo',
@@ -58,7 +58,10 @@ export async function startSoloRecorder() {
         try {
             if (!/\.wav$/i.test(file)) return;
             const st = fs.statSync(file);
-            if (st.size < (Number(process.env.MIN_WAV_BYTES || 48000))) {
+            if (st.size < CFG.metrics.minWavBytes) {
+                if (CFG.flags.shortWavLog) {
+                    console.log(`(skip) short wav: ${st.size}B < ${CFG.metrics.minWavBytes}B`);
+                }
                 try { fs.unlinkSync(file); } catch { }
                 return;
             }

@@ -1,48 +1,75 @@
-// /public/latest.js
-import { sanitizeDisplayName, ensureSocketIO } from './common.js';
-const socket = ensureSocketIO();
+// public/latest.js
+(() => {
+  const G = window.BVC;
+  if (!G) { console.error('[latest] app not initialized'); return; }
 
-const bubble = document.getElementById('bubble');
-const nameEl = bubble.querySelector('.name');
-const textEl = bubble.querySelector('.text');
-const trEl = bubble.querySelector('.tr');
+  const nowEl = document.getElementById('now');
+  if (!nowEl) { console.error('[latest] #now missing'); return; }
 
-let currentId = null;
-let hideTimer = null;
+  function renderBubble(e) {
+    const id = G.asId(e.userId);
+    const cfg = G.POSITION_CONFIG[id] || {};
+    const displayName = e.name || cfg.name || '';
+    const displaySide = e.side || cfg.side || 'left';
+    const displayColor = e.color || cfg.color || '';
 
-function show(payload) {
-  currentId = payload.id;
-  nameEl.textContent = sanitizeDisplayName(payload.name || payload.displayName || 'Speaker');
-  textEl.textContent = payload.text || '';
-  trEl.textContent = ''; // reset translation
-  bubble.classList.remove('hidden');
-  bubble.classList.add('show');
+    nowEl.className = `bubble ${displaySide}`;
+    nowEl.innerHTML = '';
 
-  clearTimeout(hideTimer);
-  const ms = Number(getComputedStyle(document.documentElement).getPropertyValue('--show-ms')) || 30000;
-  hideTimer = setTimeout(() => hide(), ms);
-}
+    // 吹き出しの“しっぽ”位置（%）
+    if (typeof cfg.x === 'number') {
+      nowEl.style.setProperty('--tail-x', `${cfg.x}%`);
+    } else {
+      nowEl.style.setProperty('--tail-x', displaySide === 'right' ? '88%' : '12%');
+    }
 
-function hide() {
-  bubble.classList.remove('show');
-  bubble.classList.add('hidden');
-  currentId = null;
-}
+    const name = document.createElement('div');
+    name.className = 'name';
+    name.textContent = displayName;
+    if (displayColor) name.style.color = displayColor;
 
-function update(payload) {
-  if (!currentId || payload.id !== currentId) return;
-  const tr = payload?.tr || payload?.append?.translation;
-  if (!tr) return;
-  if (tr.text) {
-    trEl.textContent = tr.text;
-  } else {
-    const one = Object.values(tr)[0];
-    if (typeof one === 'string') trEl.textContent = one;
+    const text = document.createElement('div');
+    text.className = 'text';
+    text.textContent = e.text || '';
+    text.style.fontSize = `${G.fontPx}px`;
+
+    nowEl.appendChild(name);
+    nowEl.appendChild(text);
+
+    if (e.tr?.text) {
+      const tr = document.createElement('div');
+      tr.className = 'tr';
+      tr.textContent = e.tr.text;
+      nowEl.appendChild(tr);
+    }
   }
-}
 
-if (socket) {
-  socket.on('connect', () => console.log('[latest] socket connected'));
-  socket.on('transcript', (payload) => show(payload));
-  socket.on('transcript_update', (payload) => update(payload));
-}
+  function onTranscript(payload) {
+    const id = G.asId(payload.userId);
+    G.ensureDeckAvatar({ ...payload, userId: id });
+    G.setActive(id);
+
+    nowEl.classList.remove('is-fading');
+    renderBubble({ ...payload, userId: id });
+
+    G.startFadeTimer(() => {
+      nowEl.classList.add('is-fading');
+    });
+  }
+
+  function onUpdate(upd) {
+    const { id, tr } = upd || {};
+    if (!id || !tr?.text) return;
+    const trEl = nowEl.querySelector('.tr');
+    if (trEl) trEl.textContent = tr.text;
+    else {
+      const el = document.createElement('div');
+      el.className = 'tr';
+      el.textContent = tr.text;
+      nowEl.appendChild(el);
+    }
+    // フェード延長はしない（好みで呼び出してOK）
+  }
+
+  G.wireSocket({ onTranscript, onUpdate });
+})();

@@ -1,27 +1,22 @@
 <!doctype html>
-<html>
+<html lang="ja">
 
 <head>
   <meta charset="utf-8" />
-  <title>Timeline — Subtitles</title>
+  <title>Broadcast VC — Timeline</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="/css/base.css?v=%BUILD_ID%">
-  <link rel="stylesheet" href="/css/skins/%SKIN%.css?v=%BUILD_ID%">
-  <link rel="stylesheet" href="/css/timeline.css?v=%BUILD_ID%">
-  <script>
-    // クエリで skin 指定可（?skin=solo）。無指定は multi。
-    (function () {
-      const s = new URLSearchParams(location.search).get('skin');
-      if (s) document.getElementById('skin-css').href = `/css/skins/${s}.css`;
-    })();
-  </script>
+  <!-- 共通CSS + タイムライン固有CSS -->
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/timeline.css">
 </head>
 
 <body>
-  <div id="safe-area">
-    <div id="timeline"></div>
-  </div>
+  <div id="timeline"></div>
+
   <script src="/socket.io/socket.io.js"></script>
+  <!-- 共通ロジック（Socket/position/avatar管理 など） -->
+  <script src="/app.js"></script>
+  <!-- タイムライン描画ロジック（既存を利用；後で共通化可能） -->
   <script src="/timeline.js"></script>
 </body>
 

@@ -3,25 +3,43 @@
 
 <head>
   <meta charset="utf-8" />
-  <title>Avatars View</title>
+  <title>Broadcast VC — Avatars</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="/css/base.css?v=%BUILD_ID%">
-  <link rel="stylesheet" href="/css/skins/%SKIN%.css?v=%BUILD_ID%">
-  <link rel="stylesheet" href="/css/avatars.css?v=%BUILD_ID%">
-  <script>
-    // now.js にモードを伝える
-    window.VIEW_MODE = 'avatars';
-  </script>
+  <!-- 共通CSS + アバター固有CSS（必要最小限） -->
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/avatars.css">
 </head>
 
-<body data-view="avatars">
-  <div id="safe-area">
-    <div id="avatars" aria-hidden="false"></div>
-    <!-- 吹き出しは非表示 -->
-    <div id="now" class="bubble" style="display:none"></div>
-  </div>
+<body>
+  <div id="avatars"></div>
+
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/now.js"></script>
+  <!-- 共通ロジック（Socket/position/avatar管理） -->
+  <script src="/app.js"></script>
+  <!-- アバターデッキ専用：発話中のハイライトのみ -->
+  <script>
+    (() => {
+      const G = window.BVC;
+      if (!G) { console.error('[avatars] app not initialized'); return; }
+
+      function onTranscript(payload) {
+        const id = G.asId(payload.userId);
+        G.ensureDeckAvatar({ ...payload, userId: id });
+        G.setActive(id);
+        // フェードで自然にdimへ戻す
+        G.startFadeTimer(() => {
+          const cur = G.currentActiveId && G.speakers.get(G.currentActiveId);
+          if (cur) {
+            cur.el.classList.add('dimmed');
+            cur.el.classList.remove('active', 'pulse');
+          }
+        });
+      }
+      function onUpdate(_) { /* 何もしない（バブル無し） */ }
+
+      G.wireSocket({ onTranscript, onUpdate });
+    })();
+  </script>
 </body>
 
 </html>
