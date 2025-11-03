@@ -1,6 +1,13 @@
 // public/app.js
+
 (() => {
   // ===== 初期設定 / DOM =====
+  const POS_URL = '/position.json';
+  let POSITION_CONFIG = window.POSITION_CONFIG || {};
+  try {
+    const j = await fetch(POS_URL).then(r => r.ok ? r.json() : ({}));
+    POSITION_CONFIG = { ...POSITION_CONFIG, ...j };
+  } catch { }
   const qs = new URLSearchParams(location.search);
   let VIEW_MODE = (window.VIEW_MODE || 'both').toLowerCase(); // latest|timeline|avatars|both
   const FONT = Number(qs.get('font') || 36);
@@ -51,9 +58,9 @@
 
   // ===== 固定配置（now.js からの移植・編集可） =====
   const POSITION_CONFIG = window.POSITION_CONFIG || {
-    '272380840434991104': { x: 78, y: 41, scale: 1.0, src: '/avatars/kakiya_still.png', name: 'カキヤ', side: 'right', color: 'rgba(170, 133, 85, 1)' },
+    '272380840434991104': { x: 78, y: 41, scale: 1.0, src: '/avatars/kakiya_still.png', name: 'カキヤ', side: 'right', color: '#aa8555' },
     '463714335596740638': { x: -10, y: 5, scale: 1.05, src: '/avatars/yoneda_still.png', name: 'ヨネダ', side: 'left', color: '#d85' },
-    '682709913335890031': { x: -20, y: 35, scale: 1.1, src: '/avatars/haracternick_still.png', name: 'Haracternick', side: 'left', color: 'rgba(85, 117, 221, 1)' },
+    '682709913335890031': { x: -20, y: 35, scale: 1.1, src: '/avatars/haracternick_still.png', name: 'Haracternick', side: 'left', color: '#5575dd' },
   };
 
   const speakers = new Map(); // id -> { el, name, color, pos }
@@ -153,6 +160,9 @@
       tr.textContent = e.tr.text;
       nowEl.appendChild(tr);
     }
+    // POSITION_CONFIG[id]?.x があればそれを使い、なければ側ごとの既定
+    const cfg = POSITION_CONFIG[id] || {};
+    nowEl.style.setProperty('--tail-x', (typeof cfg.x === 'number') ? `${cfg.x}%` : (e.side === 'right' ? '88%' : '12%'));
   }
 
   // ===== TIMELINE（既存 timeline.js の安全マージを統合） =====

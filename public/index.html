@@ -1,17 +1,144 @@
-<!-- public/index.html -->
 <!doctype html>
-<html>
+<html lang="ja">
+
 <head>
   <meta charset="utf-8" />
-  <title>Now — Subtitles</title>
+  <title>Broadcast VC — Unified View</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="/now.css" />
+  <link rel="stylesheet" href="/now.css">
+  <style>
+    body {
+      margin: 0;
+      background: #0b0e13;
+      color: #e9f0f6;
+      font-family: system-ui, sans-serif;
+    }
+
+    header {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      padding: 10px 14px;
+      border-bottom: 1px solid #1b2330;
+    }
+
+    header h1 {
+      font-size: 16px;
+      margin: 0;
+      font-weight: 600;
+      opacity: .9;
+    }
+
+    header .spacer {
+      flex: 1
+    }
+
+    main {
+      padding: 12px;
+    }
+
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    /* レイアウト */
+    #avatars {
+      position: relative;
+      height: 120px;
+    }
+
+    #timeline {
+      max-height: 65vh;
+      overflow: auto;
+    }
+
+    .entry {
+      display: flex;
+      gap: 10px;
+      margin: 8px 0;
+    }
+
+    .entry .bubble {
+      background: #111725;
+      border: 1px solid #283042;
+      border-radius: 14px;
+      padding: 10px 12px;
+      box-shadow: 0 10px 20px rgba(0, 0, 0, .25);
+      max-width: 100%;
+    }
+
+    .entry .name {
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+
+    #now {
+      transition: opacity .4s ease, transform .4s ease;
+    }
+
+    #now.is-fading {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+
+    .pfp {
+      border-radius: 12px;
+      width: 64px;
+      height: 64px;
+      object-fit: cover;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .25)
+    }
+  </style>
+  <script>window.VIEW_MODE = (new URLSearchParams(location.search).get('view') || 'both');</script>
 </head>
+
 <body>
-  <div id="safe-area">
-    <div id="now" class="bubble"></div>
-  </div>
+  <header>
+    <h1>Broadcast VC — Unified</h1>
+    <div class="spacer"></div>
+    <label>
+      View:
+      <select id="viewSel">
+        <option value="both">both (avatars + latest)</option>
+        <option value="latest">latest only</option>
+        <option value="avatars">avatars only</option>
+        <option value="timeline">timeline</option>
+      </select>
+    </label>
+    <label style="margin-left:10px">
+      Font(px):
+      <input id="fontSel" type="number" min="12" max="72" value="36" style="width:64px">
+    </label>
+  </header>
+
+  <main class="grid">
+    <!-- アバターの固定配置デッキ -->
+    <div id="avatars" class=""></div>
+
+    <!-- 最新発言バブル -->
+    <div id="latestWrap">
+      <div id="now" class="bubble is-fading"></div>
+    </div>
+
+    <!-- タイムライン -->
+    <div id="timeline"></div>
+  </main>
+
   <script src="/socket.io/socket.io.js"></script>
-  <script src="/now.js"></script>
+  <script src="/app.js"></script>
+  <script>
+    const ui = new URLSearchParams(location.search).get('ui');
+    if (ui === 'off') {
+      const style = document.createElement('style');
+      style.textContent = `header{display:none!important;} main{padding:0!important}`;
+      document.head.appendChild(style);
+    }
+  </script>
 </body>
+
 </html>
