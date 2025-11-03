@@ -18,7 +18,6 @@ assertConfig();
   // Webサーバー起動
   const io = await startWebServer(CFG.port);
   console.log('[boot] web server started');
-  console.log('[boot] web server started');
 
 
   // Discordログイン
@@ -27,9 +26,11 @@ assertConfig();
 
   voice.setIo(io);  // Socket.IOをセット
 
-  // Multiモード時のVC接続とWhisper起動
-  if (CFG.mode === 'multi') {
-    await probeWhisper();
+  // VC接続とWhisper起動（voiceChannelId があれば modeに関わらず参加）
+  await probeWhisper();
+  if (CFG.discord.voiceChannelId) {
     await joinAndRecordVC();
+  } else {
+    console.warn('[boot] VOICE_CHANNEL_ID が未設定のためVC参加をスキップしました（latest/timeline表示のみ稼働）');
   }
 })();

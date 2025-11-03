@@ -1,42 +1,72 @@
-// public/app.js
+// public/app.js (full replace)
 (() => {
-  // ===== クエリ・DOM =====
+  // ---- Global namespace ----
+  if (!window.BVC) window.BVC = {};
+  const GLOBAL = window.BVC;
+
+  // ---- URL params (fade/font/mode) ----
   const qs = new URLSearchParams(location.search);
-  const GLOBAL = window.BVC || (window.BVC = {});
-  GLOBAL.viewMode = (qs.get('view') || 'both').toLowerCase(); // latest|timeline|avatars|both
   GLOBAL.fadeSec = Number(qs.get('fade') || 30);
   GLOBAL.fontPx = Number(qs.get('font') || 36);
+  let RUN_MODE = (qs.get('mode') || '').toLowerCase(); // 'single'|'multi'|''
+  GLOBAL.getMode = () => RUN_MODE;
 
-  // Socket.IO
-  if (typeof io !== 'function') { console.error('[app] socket.io not found'); return; }
-  const socket = io();
-  GLOBAL.socket = socket;
+  // ---- Socket.IO init ----
+  if (typeof io !== 'function') {
+    console.error('[app] socket.io client not found');
+    return;
+  }
+  GLOBAL.socket = io();
+  GLOBAL.socket.on('connect', () => console.log('[app] socket connected', GLOBAL.socket.id));
+  GLOBAL.socket.on('disconnect', () => console.log('[app] disconnected'));
 
-  // POSITION_CONFIG 取得（window.POSITION_CONFIG→/position.json→既定）
-  GLOBAL.POSITION_CONFIG = window.POSITION_CONFIG || {
-    '272380840434991104': { x: 78, y: 41, scale: 1.0, src: '/avatars/kakiya_still.png', name: 'カキヤ', side: 'right', color: 'rgba(170,133,85,1)' },
-    '463714335596740638': { x: -10, y: 5, scale: 1.05, src: '/avatars/yoneda_still.png', name: 'ヨネダ', side: 'left', color: '#d85' },
-    '682709913335890031': { x: -20, y: 35, scale: 1.1, src: '/avatars/haracternick_still.png', name: 'Haracternick', side: 'left', color: 'rgba(85,117,221,1)' },
-  };
-  (async () => {
+  // ---- Mode decide (URL > /healthz > default) ----
+  async function decideMode() {
+    if (RUN_MODE === 'single' || RUN_MODE === 'multi') return RUN_MODE;
     try {
-      const r = await fetch('/position.json');
+      const r = await fetch('/healthz', { cache: 'no-store' });
+      if (r.ok) {
+        const j = await r.json();
+        const m = (j?.mode || '').toLowerCase();
+        if (m === 'single' || m === 'multi') RUN_MODE = m;
+      }
+    } catch { }
+    if (!RUN_MODE) RUN_MODE = 'multi';
+    return RUN_MODE;
+  }
+
+  // ---- Position config load (auto switch) ----
+  GLOBAL.POSITION_CONFIG = {};
+  async function loadPositionConfig() {
+    const mode = await decideMode();
+    const path = mode === 'single' ? '/position.single.json' : '/position.json';
+    try {
+      const r = await fetch(`${path}?v=${Date.now()}`); // cache-buster
       if (r.ok) {
         const j = await r.json();
         GLOBAL.POSITION_CONFIG = { ...GLOBAL.POSITION_CONFIG, ...j };
+        console.log(`[app] position loaded: ${path}`);
+        // 読み込み後に全員のアバターを初期表示（dimmed）
+        renderDeckFromPosition();
+      } else {
+        console.warn(`[app] position file not found: ${path}`);
       }
-    } catch { }
-  })();
+    } catch (e) {
+      console.error('[app] failed to load position file:', e);
+    }
+  }
 
-  // アバターデッキ管理
+  // ---- Avatars deck management ----
   const speakers = new Map(); // id -> { el, name, color, pos }
   GLOBAL.speakers = speakers;
   GLOBAL.currentActiveId = null;
 
-  function asId(v) { return String(v) }
+  function asId(v) { return String(v); }
   GLOBAL.asId = asId;
 
-  function autoPosition(side = 'left') { return { x: side === 'right' ? 85 : 15, y: 50, scale: 1 } }
+  function autoPosition(side = 'left') {
+    return { x: side === 'right' ? 85 : 15, y: 50, scale: 1 };
+  }
   GLOBAL.autoPosition = autoPosition;
 
   function ensureDeckAvatar({ userId, side, name, color, avatar, icon }) {
@@ -89,7 +119,7 @@
   }
   GLOBAL.setActive = setActive;
 
-  // 汎用フェード
+  // ---- Fade utility ----
   let fadeTimer = null;
   function startFadeTimer(onFade) {
     if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null; }
@@ -108,27 +138,42 @@
   }
   GLOBAL.startFadeTimer = startFadeTimer;
 
-  // 再接続ガード
-  let wired = false;
+  // ---- Wire socket events (dedup) ----
+  let _wired = false;
   GLOBAL.wireSocket = (handlers) => {
-    if (wired) return;
-    wired = true;
+    if (_wired) return;
+    _wired = true;
+    const s = GLOBAL.socket;
+    if (!s) { console.error('[app] GLOBAL.socket missing'); return; }
     const { onTranscript, onUpdate } = handlers || {};
-    if (onTranscript) socket.on('transcript', onTranscript);
-    if (onUpdate) socket.on('transcript_update', onUpdate);
-    socket.on('connect', () => console.log('[app] socket connected', socket.id));
-    socket.on('disconnect', () => console.log('[app] disconnected'));
+    if (onTranscript) s.on('transcript', onTranscript);
+    if (onUpdate) s.on('transcript_update', onUpdate);
   };
 
-  // 初期デッキのプリロード
-  (function preload() {
+  // ---- Render all avatars at startup (dimmed) ----
+  function renderDeckFromPosition() {
     const deck = document.getElementById('avatars');
-    if (!deck) return;
-    Object.entries(GLOBAL.POSITION_CONFIG).forEach(([uid, cfg]) => {
+    if (!deck) return; // page without deck
+    const ids = Object.keys(GLOBAL.POSITION_CONFIG || {});
+    for (const uid of ids) {
+      const cfg = GLOBAL.POSITION_CONFIG[uid] || {};
       ensureDeckAvatar({
         userId: asId(uid),
-        name: cfg.name, side: cfg.side, color: cfg.color, avatar: cfg.src, icon: cfg.src,
+        name: cfg.name,
+        side: cfg.side,
+        color: cfg.color,
+        avatar: cfg.src,
+        icon: cfg.src,
       });
-    });
-  })();
+      const rec = speakers.get(asId(uid));
+      if (rec?.el) {
+        rec.el.classList.add('dimmed');
+        rec.el.classList.remove('active', 'pulse');
+      }
+    }
+  }
+  GLOBAL.renderDeckFromPosition = renderDeckFromPosition;
+
+  // ---- Boot sequence ----
+  loadPositionConfig(); // async (will call renderDeckFromPosition when loaded)
 })();
