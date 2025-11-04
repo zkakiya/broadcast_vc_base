@@ -1,6 +1,6 @@
 /* public/base.css : 共通トークン・基礎レイアウト */
 :root {
-    --bubble: #111725;
+    --bubble: #1117259d;
     --bubble-border: #283042;
     --radius: 14px;
     --shadow: 0 10px 20px rgba(0, 0, 0, .25);
@@ -16,6 +16,10 @@
     --pfp-dim-saturate: 0.85;
 }
 
+* {
+    box-sizing: border-box;
+}
+
 /* ベース */
 html,
 body {
@@ -25,15 +29,20 @@ body {
 
 body {
     margin: 0;
-    background: #0b0e13;
+    background: transparent;
     color: #e9f0f6;
-    font-family: system-ui, sans-serif;
+    font-family: "游ゴシック体", YuGothic, "游ゴシック", "Yu Gothic", sans-serif;
+    font-weight: bold;
+    overflow: hidden;
+
 }
 
 /* アバターデッキ（共通） */
 #avatars {
-    position: fixed;
     height: 100vh;
+    left: 0;
+    position: fixed;
+    top: 0;
     width: 100vw;
 }
 

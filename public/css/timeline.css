@@ -1,9 +1,12 @@
 /* public/css/timeline.css : タイムライン専用 */
 
 #timeline {
-    max-height: 70vh;
+    background-color: rgba(17, 17, 34, 0.5);
+    max-height: 100vh;
+    height: 100vh;
     overflow: auto;
     padding: 12px;
+    width: 100vw;
 }
 
 .entry {
