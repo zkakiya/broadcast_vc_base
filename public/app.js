@@ -91,7 +91,32 @@
     el.style.top = `${pos.y}%`;
     el.style.setProperty('--scale', pos.scale || 1);
 
+    // === マスク適用部分 ===
+    // 明示的にcfg.maskがある場合 → それを使用
+    // 無い場合 → srcをそのままマスクとして使用（PNGのアルファを利用）
+    const maskSrc = cfg?.mask || src;
+    if (maskSrc) {
+      el.style.webkitMaskImage = `url(${maskSrc})`;
+      el.style.maskImage = `url(${maskSrc})`;
+      el.style.webkitMaskRepeat = 'no-repeat';
+      el.style.maskRepeat = 'no-repeat';
+      el.style.webkitMaskSize = 'contain';
+      el.style.maskSize = 'contain';
+      el.style.webkitMaskPosition = 'center';
+      el.style.maskPosition = 'center';
+    }
+
+    // === デッキに追加 ===
     deck.appendChild(el);
+
+    // デバッグクリック：クリックでアクティブ化
+    el.addEventListener('click', () => {
+      setActive(id);
+      startFadeTimer(() => {
+        el.classList.add('dimmed');
+        el.classList.remove('active');
+      });
+    });
 
     rec = {
       el,
