@@ -10,6 +10,7 @@ import { sanitizeASR, canonicalizeForDup } from '../utils/text_sanitize.js';
 import { getPersonProtectSet } from '../utils/dictionary.js';
 import { getSpeaker } from '../registry/speakers.js';
 import { TranslationBuffer } from './translation_buffer.js';
+import { RmsGate } from './rms_gate.js';          // ★ 追加
 
 const VAD_SILENCE_MS = CFG.asr.vadSilenceMs;
 const UTTER_MAX_MS = CFG.asr.utterMaxMs;
@@ -36,10 +37,9 @@ export class VoiceSession {
         this.io = io;
         this.recordingsDir = recordingsDir;
 
-        // ensure recordingsDir exists
         try { fs.mkdirSync(this.recordingsDir, { recursive: true }); } catch { }
 
-        // runtime fields
+        // runtime
         this.opusStream = null;
         this.segIndex = 0;
         this.segStart = 0;
@@ -50,19 +50,21 @@ export class VoiceSession {
         this.wavWriter = null;
         this.decoder = null;
         this.forceTimer = null;
+        this.gate = null;                         // ★ 追加：手前VAD
 
         this.recentCanon = []; // { canon, ts }
         this.lastText = { text: null, ts: 0 };
 
-        this.sentMsgRef = null; // Discord メッセージ参照
-        this.trBuffer = null;   // TranslationBuffer
+        this.sentMsgRef = null;
+        this.trBuffer = null;
         this.closed = false;
+        this._ending = false;                     // ★ 追加：多重_end防止
     }
 
     start() {
-        // ✅ 先に opusStream を作ってから segment 開始
+        // Discord 受信ストリーム（AfterSilence は維持）
         this.opusStream = this.receiver.subscribe(this.userId, {
-            end: { behavior: 1 /* EndBehaviorType.AfterSilence */, duration: VAD_SILENCE_MS },
+            end: { behavior: 1 /* AfterSilence */, duration: VAD_SILENCE_MS },
         });
         this.opusStream.setMaxListeners(0);
 
@@ -70,23 +72,73 @@ export class VoiceSession {
             .on('error', (e) => console.error('opusStream error:', e))
             .once('end', () => this._onEndStream());
 
-        // ここで初めてセグメントを開始
         this._startSegment();
     }
 
     _startSegment() {
+        this._ending = false;                    // ★ reset
         this.segIndex += 1;
         this.segStart = Date.now();
         this.baseId = this.baseId || `${this.userId}-${this.segStart}`;
 
         this.wavPath = path.join(this.recordingsDir, `${this.userId}-${this.segStart}-${this.segIndex}.wav`);
         this.decoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 48000 });
-        this.wavWriter = new wav.FileWriter(this.wavPath, { sampleRate: 48000, channels: 1 });
+        // ★ ここが重要：必ず mkdir -p してから FileWriter を開く
+        try {
+            fs.mkdirSync(path.dirname(this.wavPath), { recursive: true });
+        } catch { }
+        try {
+            this.wavWriter = new wav.FileWriter(this.wavPath, { sampleRate: 48000, channels: 1 });
+        } catch (e) {
+            if (e?.code === 'ENOENT') {
+                // 極まれに競合で失敗する場合のワンモアトライ
+                try {
+                    fs.mkdirSync(path.dirname(this.wavPath), { recursive: true });
+                    this.wavWriter = new wav.FileWriter(this.wavPath, { sampleRate: 48000, channels: 1 });
+                } catch (e2) {
+                    console.error('wavWriter open failed:', e2);
+                    // 書けないならこのセグメントはスキップ
+                    this._scheduleNextSegment();
+                    return;
+                }
+            } else {
+                console.error('wavWriter open failed:', e);
+                this._scheduleNextSegment();
+                return;
+            }
+        }
+        console.log(`[seg] start user=${this.userId} seg=${this.segIndex}`);
 
-        // this.opusStream は start() 時に生成済み
+
+        // ★ 追加：RMSベースのノイズゲート（手前VAD）
+        this.gate = new RmsGate({
+            sampleRate: 48000,
+            frameMs: Number(process.env.VAD_FRAME_MS ?? 20),
+            openDb: Number(process.env.VAD_OPEN_DB ?? -38), // 開く閾値（大きいほど開きにくい）
+            closeDb: Number(process.env.VAD_CLOSE_DB ?? -45), // 閉じる閾値（小さいほど閉じやすい）
+            hangMs: Number(process.env.VAD_HANG_MS ?? 400), // 無音継続で閉じる時間
+        });
+
+        // ★ 手前VADが閉じた＝「一区切り」の合図 → セグメントを強制終了して再開
+        this.gate.on('segmentEnd', () => {
+            // 既存の AfterSilence が働かない常時入力ケースでも終話できる
+            if (!this._ending) {
+                this._ending = true;
+                // ここで今のセグメントを確実に閉じる
+                try { this.decoder?.unpipe?.(this.gate); } catch { }
+                try { this.gate?.unpipe?.(this.wavWriter); } catch { }
+                try { this.wavWriter?.end(); } catch { }
+                // 以降は通常の _endSegment 流れに委ねる
+                this._endSegment(true);
+            }
+        });
+
+        // ★ 配線：Opus→PCM→Gate→WAV
         this.opusStream
             .pipe(this.decoder)
             .on('error', (e) => console.error('decoder error:', e))
+            .pipe(this.gate)
+            .on('error', (e) => console.error('gate error:', e))
             .pipe(this.wavWriter)
             .on('error', (e) => console.error('wavWriter error:', e));
 
@@ -97,12 +149,16 @@ export class VoiceSession {
     _endSegment(forced = false) {
         if (!this.wavWriter) return;
 
-        try { this.decoder?.unpipe?.(this.wavWriter); } catch { }
+        // 物理配線は gate.on('segmentEnd') で既に切っている可能性がある
+        try { this.decoder?.unpipe?.(this.gate); } catch { }
+        try { this.gate?.unpipe?.(this.wavWriter); } catch { }
         try { this.wavWriter.end(); } catch { }
         if (this.forceTimer) { clearTimeout(this.forceTimer); this.forceTimer = null; }
 
         const thisWav = this.wavPath;
-        this.wavWriter = null; this.decoder = null; this.wavPath = null;
+        this.wavWriter = null; this.decoder = null; this.wavPath = null; this.gate = null;
+
+        console.log(`[seg] end user=${this.userId} forced=${forced}`);
 
         setTimeout(async () => {
             try {
@@ -180,7 +236,10 @@ export class VoiceSession {
             }
         }, 100);
 
-        if (forced) setTimeout(() => this._startSegment(), SEG_GAP_MS);
+        if (forced) this._scheduleNextSegment();
+    }
+    _scheduleNextSegment() {
+        setTimeout(() => this._startSegment(), SEG_GAP_MS);
     }
 
     async _sendDiscordOriginal(speakerName, cleanedText) {
@@ -236,9 +295,7 @@ export class VoiceSession {
         try { this._endSegment(false); } catch { }
         if (this.forceTimer) { clearTimeout(this.forceTimer); this.forceTimer = null; }
 
-        setTimeout(() => {
-            this._dispose();
-        }, 50);
+        setTimeout(() => { this._dispose(); }, 50);
     }
 
     _dispose() {
