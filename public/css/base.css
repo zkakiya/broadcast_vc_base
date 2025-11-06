@@ -14,6 +14,16 @@
     /* 0.5～0.75 くらいが目安 */
     --pfp-dim-contrast: 0.92;
     --pfp-dim-saturate: 0.85;
+    --pfp-active-scale: 1.08;
+    /* 発話中の拡大率 */
+    --pfp-ring-color: #47a3ff;
+    /* 発光カラー */
+    --pfp-bob-amp: 1.25%%;
+    /* 上下動の振幅 */
+    --pfp-bob-dur: 1.4s;
+    /* 上下動の周期 */
+    --pfp-glow-dur: 1.4s;
+    /* 発光の鼓動周期 */
 }
 
 * {
@@ -74,4 +84,48 @@ body {
 /* ユーティリティ */
 .hidden {
     display: none !important;
+}
+
+/* 発話中の強調（アニメは .active で付与） */
+.deck-avatar.active {
+    /* まずは明るさ・彩度を少しだけ上げる */
+    filter: brightness(1.12) saturate(1.05) contrast(1.02) drop-shadow(0 0 8px color-mix(in srgb, var(--pfp-ring-color), transparent 70%));
+    transform: translate(-50%, -50%) scale(var(--pfp-active-scale));
+    z-index: var(--pfp-z-active, 20);
+    /* ふわっと上下動＋発光の鼓動 */
+    animation:
+        avatarBob var(--pfp-bob-dur) ease-in-out infinite,
+        avatarGlow var(--pfp-glow-dur) ease-in-out infinite;
+}
+
+/* 待機（暗めエフェクト）はそのまま（不透明のままトーンダウン） */
+.deck-avatar.dimmed {
+    filter:
+        brightness(var(--pfp-dim-brightness, .62)) contrast(var(--pfp-dim-contrast, .92)) saturate(var(--pfp-dim-saturate, .85)) grayscale(8%);
+}
+
+/* アニメーション定義 */
+@keyframes avatarBob {
+
+    0%,
+    100% {
+        transform: translate(-50%, -50%) scale(var(--pfp-active-scale)) translateY(0);
+    }
+
+    50% {
+        transform: translate(-50%, -50%) scale(var(--pfp-active-scale)) translateY(calc(-1 * var(--pfp-bob-amp)));
+    }
+}
+
+/* drop-shadow の強さを周期的に変える（外側ににじむ光） */
+@keyframes avatarGlow {
+
+    0%,
+    100% {
+        filter: brightness(1.10) saturate(1.04) contrast(1.02) drop-shadow(0 0 6px color-mix(in srgb, var(--pfp-ring-color), transparent 70%)) drop-shadow(0 0 0px color-mix(in srgb, var(--pfp-ring-color), transparent 80%));
+    }
+
+    50% {
+        filter: brightness(1.18) saturate(1.08) contrast(1.03) drop-shadow(0 0 14px color-mix(in srgb, var(--pfp-ring-color), transparent 40%)) drop-shadow(0 0 24px color-mix(in srgb, var(--pfp-ring-color), transparent 70%));
+    }
 }
