@@ -99,6 +99,10 @@ export class VoiceSession {
     }
 
     _startSegment() {
+        // ★ 追加：セッション終了後は新規セグメントを開始しない（最小ガード）
+        if (this.closed) {
+            return;
+        }
         this._ending = false;                    // ★ reset
         this.segIndex += 1;
         this.segStart = Date.now();

@@ -169,8 +169,12 @@ export async function joinAndRecordVC() {
     const userId = String(userIdRaw);
     // ★ すぐ消さず LINGER_MS 後に破棄する（その間に次の start が来たらキャンセル）
     const t = setTimeout(() => {
-      sessions.delete(userId);
-      console.log(`⏹️ ${userId} end of speech (disposed after ${LINGER_MS}ms)`);
+      // ★ 追加：実体のセッションを明示的に終了させる
+      const session = sessions.get(userId);
+      if (session && !session.closed) {
+        try { session._onEndStream(); } catch { /* noop */ }
+      }
+      sessions.delete(userId); console.log(`⏹️ ${userId} end of speech (disposed after ${LINGER_MS}ms)`);
       endTimers.delete(userId);
     }, LINGER_MS);
     endTimers.set(userId, t);
