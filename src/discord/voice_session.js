@@ -12,12 +12,18 @@ import { getSpeaker } from '../registry/speakers.js';
 import { TranslationBuffer } from './translation_buffer.js';
 import { RmsGate } from './rms_gate.js';          // ★ 追加
 
-const VAD_SILENCE_MS = CFG.asr.vadSilenceMs;
-const UTTER_MAX_MS = CFG.asr.utterMaxMs;
-const SEG_GAP_MS = CFG.asr.segGapMs;
+// ★ ユーザーごとに Discord の送信メッセージを共有
+const USER_MSG_REF = new Map(); // userId -> Message
+// userId -> boolean（送信/更新ロック）
+const USER_MSG_LOCK = new Map();
 
-const PHRASE_WINDOW_MS = CFG.asr.phraseWindowMs;
-const PHRASE_MAX_KEEP = CFG.asr.phraseMaxKeep;
+// ★ CFG.asr が未設定でも破綻しない安全デフォルト
+const VAD_SILENCE_MS = CFG.asr?.vadSilenceMs ?? 600;   // 句点扱いの無音長
+const UTTER_MAX_MS = CFG.asr?.utterMaxMs ?? 12000; // 1発話の最大長
+const SEG_GAP_MS = CFG.asr?.segGapMs ?? 180;   // 次セグメント再開までの猶予
+const PHRASE_WINDOW_MS = CFG.asr?.phraseWindowMs ?? 6000;  // デュープ検知の時間窓
+const PHRASE_MAX_KEEP = CFG.asr?.phraseMaxKeep ?? 12;    // デュープ履歴の最大保持件数
+const MIN_SEG_MS = Number(process.env.MIN_SEG_MS ?? 900); // 900ms未満は捨てる
 
 const MIN_WAV_BYTES = Number(process.env.MIN_WAV_BYTES ?? 48000);
 
@@ -55,21 +61,38 @@ export class VoiceSession {
         this.recentCanon = []; // { canon, ts }
         this.lastText = { text: null, ts: 0 };
 
-        this.sentMsgRef = null;
+        this.sentMsgRef = USER_MSG_REF.get(this.userId) || null; // ★ 共有キャッシュから復元
+
         this.trBuffer = null;
         this.closed = false;
         this._ending = false;                     // ★ 追加：多重_end防止
+        this.origText = '';          // ★ 追加：原文の累積
+        this.lastTr = '';            // ★ 追加：最新訳（翻訳到着で差し替え用）
+        this.speakerName = '';       // ★ 追加：Discord書式用に保持
     }
 
     start() {
         // Discord 受信ストリーム（AfterSilence は維持）
         this.opusStream = this.receiver.subscribe(this.userId, {
-            end: { behavior: 1 /* AfterSilence */, duration: VAD_SILENCE_MS },
+            end: { behavior: 0 /* EndBehaviorType.Manual */ },
         });
         this.opusStream.setMaxListeners(0);
 
         this.opusStream
-            .on('error', (e) => console.error('opusStream error:', e))
+            .on('error', (e) => {
+                const msg = String(e?.message || e || '');
+                if (msg.includes('UnencryptedWhenPassthroughDisabled')) {
+                    // 未暗号パケットが混ざっただけ。セッションをソフトに切って次へ。
+                    console.warn('[voice] received unencrypted packet; soft-recovering current segment');
+                    try { this.decoder?.unpipe?.(this.gate); } catch { }
+                    try { this.gate?.unpipe?.(this.wavWriter); } catch { }
+                    try { this.wavWriter?.end?.(); } catch { }
+                    // 今のセグメントを閉じて、次セグメントへ（forced=true）
+                    this._endSegment(true);
+                    return; // ここで止める（プロセスを落とさない）
+                }
+                console.error('opusStream error:', e);
+            })
             .once('end', () => this._onEndStream());
 
         this._startSegment();
@@ -148,6 +171,8 @@ export class VoiceSession {
 
     _endSegment(forced = false) {
         if (!this.wavWriter) return;
+        const durMs = Date.now() - this.segStart;
+        const tooShort = durMs < MIN_SEG_MS;
 
         // 物理配線は gate.on('segmentEnd') で既に切っている可能性がある
         try { this.decoder?.unpipe?.(this.gate); } catch { }
@@ -158,10 +183,11 @@ export class VoiceSession {
         const thisWav = this.wavPath;
         this.wavWriter = null; this.decoder = null; this.wavPath = null; this.gate = null;
 
-        console.log(`[seg] end user=${this.userId} forced=${forced}`);
+        console.log(`[seg] end user=${this.userId} forced=${forced} dur=${durMs}ms short=${tooShort}`);
 
         setTimeout(async () => {
             try {
+                if (tooShort) { try { if (fs.existsSync(thisWav)) fs.unlinkSync(thisWav); } catch { }; return; }
                 const st = fs.statSync(thisWav);
                 if (st.size < MIN_WAV_BYTES) {
                     if (process.env.SHORT_WAV_LOG !== '0') {
@@ -199,6 +225,7 @@ export class VoiceSession {
 
                     if (!this.firstFlushDone) {
                         this.firstFlushDone = true;
+                        this.speakerName = speakerName;
                         if (this.io) {
                             this.io.emit('transcript', {
                                 id: this.baseId,
@@ -213,14 +240,10 @@ export class VoiceSession {
                                 ts: now,
                             });
                         }
-                    } else {
-                        if (this.io) {
-                            this.io.emit('transcript_update', { id: this.baseId, append: cleanedText });
-                        }
                     }
 
-                    // Discord 原文
-                    await this._sendDiscordOriginal(speakerName, cleanedText);
+                    // ★ ここから先は Discord メッセージを「置換更新」に統一
+                    await this._updateDiscordMessage(cleanedText);
 
                     // 訳：クラス化バッファで “replace” 反映
                     const trEnabled = (CFG?.translate?.enabled ?? true);
@@ -242,23 +265,47 @@ export class VoiceSession {
         setTimeout(() => this._startSegment(), SEG_GAP_MS);
     }
 
-    async _sendDiscordOriginal(speakerName, cleanedText) {
+    async _updateDiscordMessage(delta) {
+        // --- 簡易ロック（userId 単位で直列化） ---
+        while (USER_MSG_LOCK.get(this.userId)) {
+            await new Promise(r => setTimeout(r, 10));
+        }
+        USER_MSG_LOCK.set(this.userId, true);
+
         try {
             const textChannel = await this.client.channels.fetch(CFG.discord.textChannelId);
             if (!textChannel || !textChannel.isTextBased()) return;
-            if (!this.sentMsgRef) {
-                this.sentMsgRef = await textChannel.send(`**${speakerName}**: ${cleanedText}`);
-            } else {
-                const cur = this.sentMsgRef.content ?? '';
-                const next = cur + '\n' + cleanedText;
+
+            // 既存参照を“毎回”取り直す（constructor で逃したケースも拾う）
+            this.sentMsgRef = this.sentMsgRef || USER_MSG_REF.get(this.userId) || null;
+
+            // 原文の累積（delta が空でも再描画できる）
+            const d = String(delta || '').trim();
+            this.origText = d ? (this.origText ? `${this.origText} ${d}`.trim() : d) : this.origText;
+
+            const base = `**${this.speakerName || 'Speaker'}**: ${this.origText}`;
+            const body = this.lastTr ? `${base}\n> _${this.lastTr}_` : base;
+
+            // 既存メッセージを優先して edit、無ければ send
+            if (this.sentMsgRef) {
                 try {
-                    await this.sentMsgRef.edit(next);
-                } catch {
-                    this.sentMsgRef = await textChannel.send(cleanedText);
+                    await this.sentMsgRef.edit(body);
+                } catch (e) {
+                    // 既存が消えてる/編集できない → 新規作成に切替
+                    this.sentMsgRef = await textChannel.send(body);
+                    USER_MSG_REF.set(this.userId, this.sentMsgRef);
                 }
+            } else {
+                this.sentMsgRef = await textChannel.send(body);
+                USER_MSG_REF.set(this.userId, this.sentMsgRef);
             }
+
+            // 念のため共有側も毎回更新
+            USER_MSG_REF.set(this.userId, this.sentMsgRef);
         } catch (e) {
-            console.error('❌ Failed to send message:', e);
+            console.error('❌ Failed to update message:', e);
+        } finally {
+            USER_MSG_LOCK.set(this.userId, false);
         }
     }
 
@@ -269,21 +316,9 @@ export class VoiceSession {
             target,
             io: this.io,
             onTranslated: async (tr) => {
-                if (!this.sentMsgRef) return;
-                const cur = this.sentMsgRef.content ?? '';
-                const next = `${cur}\n> _${tr}_`;
-                try {
-                    await this.sentMsgRef.edit(next);
-                } catch {
-                    try {
-                        const ch = await this.client.channels.fetch(CFG.discord.textChannelId);
-                        if (ch && ch.isTextBased()) {
-                            this.sentMsgRef = await ch.send(`> _${tr}_`);
-                        }
-                    } catch (e) {
-                        console.warn('[voice_session] failed to fallback-send tr:', e?.message || e);
-                    }
-                }
+                // ★ 置換（差し替え）に統一：最新訳を保持 → 本文再描画
+                this.lastTr = String(tr || '').trim();
+                await this._updateDiscordMessage(''); // delta無しでも再描画（訳だけ差し替え）
             }
         });
     }
@@ -301,6 +336,6 @@ export class VoiceSession {
     _dispose() {
         try { this.trBuffer?.dispose?.(); } catch { }
         this.trBuffer = null;
-        this.sentMsgRef = null;
+        // USER_MSG_REF が保持しているので触らない
     }
 }

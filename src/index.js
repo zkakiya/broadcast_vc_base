@@ -4,6 +4,8 @@ import { probeWhisper } from './core/transcribe.js';
 import { startWebServer } from './web/server.js';
 import { cleanRecordingsDir } from './utils/cleanup.js';
 import * as voice from './discord/voice.js';
+import sodium from 'libsodium-wrappers';
+await sodium.ready;
 
 assertConfig();
 

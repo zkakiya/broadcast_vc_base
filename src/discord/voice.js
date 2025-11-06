@@ -30,6 +30,10 @@ try { fs.mkdirSync(recordingsDir, { recursive: true }); } catch { /* noop */ }
 let currentConnection = null;
 let isReconnecting = false;
 
+// ★ speaking終了後、すぐ破棄せず少し待ってから破棄する
+const LINGER_MS = Number(process.env.VOICE_LINGER_MS ?? 1200);
+const endTimers = new Map(); // userId -> Timeout
+
 // 再接続ポリシー
 const VOICE_RETRY_MAX = Number(process.env.VOICE_RETRY_MAX ?? 5);
 const VOICE_RETRY_INITIAL_MS = Number(process.env.VOICE_RETRY_INITIAL_MS ?? 1500);
@@ -78,6 +82,8 @@ export async function joinAndRecordVC() {
         adapterCreator: guild.voiceAdapterCreator,
         selfDeaf: false,
         selfMute: false,
+        // 未暗号パケットも許可（自動で暗号/非暗号を判断する）
+        group: 'default',
       });
       currentConnection = connection;
 
@@ -135,6 +141,11 @@ export async function joinAndRecordVC() {
   // speaking開始：ユーザー単位でセッション生成（多重生成ガード）
   receiver.speaking.on('start', (userIdRaw) => {
     const userId = String(userIdRaw);
+
+    // ★ 保留中の破棄タイマーがあればキャンセル（連続発話を一つのセッションに）
+    const t = endTimers.get(userId);
+    if (t) { clearTimeout(t); endTimers.delete(userId); }
+
     if (sessions.has(userId)) return; // 既存セッション稼働中
 
     try {
@@ -156,7 +167,12 @@ export async function joinAndRecordVC() {
   // speaking終了：ガード解除（次の発話で新セッションを作れるように）
   receiver.speaking.on('end', (userIdRaw) => {
     const userId = String(userIdRaw);
-    sessions.delete(userId);
-    console.log(`⏹️ ${userId} end of speech`);
+    // ★ すぐ消さず LINGER_MS 後に破棄する（その間に次の start が来たらキャンセル）
+    const t = setTimeout(() => {
+      sessions.delete(userId);
+      console.log(`⏹️ ${userId} end of speech (disposed after ${LINGER_MS}ms)`);
+      endTimers.delete(userId);
+    }, LINGER_MS);
+    endTimers.set(userId, t);
   });
 }
