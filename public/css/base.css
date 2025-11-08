@@ -18,7 +18,7 @@
     /* 発話中の拡大率 */
     --pfp-ring-color: #47a3ff;
     /* 発光カラー */
-    --pfp-bob-amp: 1.25%%;
+    --pfp-bob-amp: 1.25%;
     /* 上下動の振幅 */
     --pfp-bob-dur: 1.4s;
     /* 上下動の周期 */

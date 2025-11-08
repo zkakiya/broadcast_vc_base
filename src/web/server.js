@@ -18,6 +18,11 @@ export const io = new SocketIOServer(httpServer, {
   cors: { origin: CFG.corsOrigin || '*' },
 });
 
+io.on('connection', (sock) => {
+  console.log('[ws] connected', sock.id);
+  sock.on('disconnect', (r) => console.log('[ws] disconnected', sock.id, r));
+});
+
 // 静的ファイルの配信（例: now.html）
 const pubDir = path.join(__dirname, '../../public');
 app.get('/', (_, res) => res.redirect('/now.html'));

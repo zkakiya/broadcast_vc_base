@@ -10,7 +10,7 @@ import { sanitizeASR, canonicalizeForDup } from '../utils/text_sanitize.js';
 import { getPersonProtectSet } from '../utils/dictionary.js';
 import { getSpeaker } from '../registry/speakers.js';
 import { TranslationBuffer } from './translation_buffer.js';
-import { RmsGate } from './rms_gate.js';          // ★ 追加
+import { RmsGate } from './rms_gate.js';
 
 // ★ ユーザーごとに Discord の送信メッセージを共有
 const USER_MSG_REF = new Map(); // userId -> Message
@@ -18,13 +18,12 @@ const USER_MSG_REF = new Map(); // userId -> Message
 const USER_MSG_LOCK = new Map();
 
 // ★ CFG.asr が未設定でも破綻しない安全デフォルト
-const VAD_SILENCE_MS = CFG.asr?.vadSilenceMs ?? 600;   // 句点扱いの無音長
-const UTTER_MAX_MS = CFG.asr?.utterMaxMs ?? 12000; // 1発話の最大長
-const SEG_GAP_MS = CFG.asr?.segGapMs ?? 180;   // 次セグメント再開までの猶予
-const PHRASE_WINDOW_MS = CFG.asr?.phraseWindowMs ?? 6000;  // デュープ検知の時間窓
-const PHRASE_MAX_KEEP = CFG.asr?.phraseMaxKeep ?? 12;    // デュープ履歴の最大保持件数
-const MIN_SEG_MS = Number(process.env.MIN_SEG_MS ?? 900); // 900ms未満は捨てる
-
+const VAD_SILENCE_MS = CFG.asr?.vadSilenceMs ?? 600;
+const UTTER_MAX_MS = CFG.asr?.utterMaxMs ?? 12000;
+const SEG_GAP_MS = CFG.asr?.segGapMs ?? 180;
+const PHRASE_WINDOW_MS = CFG.asr?.phraseWindowMs ?? 6000;
+const PHRASE_MAX_KEEP = CFG.asr?.phraseMaxKeep ?? 12;
+const MIN_SEG_MS = Number(process.env.MIN_SEG_MS ?? 900);
 const MIN_WAV_BYTES = Number(process.env.MIN_WAV_BYTES ?? 48000);
 
 export class VoiceSession {
@@ -56,23 +55,23 @@ export class VoiceSession {
         this.wavWriter = null;
         this.decoder = null;
         this.forceTimer = null;
-        this.gate = null;                         // ★ 追加：手前VAD
+        this.gate = null;
 
         this.recentCanon = []; // { canon, ts }
         this.lastText = { text: null, ts: 0 };
 
-        this.sentMsgRef = USER_MSG_REF.get(this.userId) || null; // ★ 共有キャッシュから復元
+        this.sentMsgRef = USER_MSG_REF.get(this.userId) || null;
 
         this.trBuffer = null;
         this.closed = false;
-        this._ending = false;                     // ★ 追加：多重_end防止
-        this.origText = '';          // ★ 追加：原文の累積
-        this.lastTr = '';            // ★ 追加：最新訳（翻訳到着で差し替え用）
-        this.speakerName = '';       // ★ 追加：Discord書式用に保持
+        this._ending = false;
+
+        this.origText = '';
+        this.lastTr = '';
+        this.speakerName = '';
     }
 
     start() {
-        // Discord 受信ストリーム（AfterSilence は維持）
         this.opusStream = this.receiver.subscribe(this.userId, {
             end: { behavior: 0 /* EndBehaviorType.Manual */ },
         });
@@ -82,14 +81,12 @@ export class VoiceSession {
             .on('error', (e) => {
                 const msg = String(e?.message || e || '');
                 if (msg.includes('UnencryptedWhenPassthroughDisabled')) {
-                    // 未暗号パケットが混ざっただけ。セッションをソフトに切って次へ。
                     console.warn('[voice] received unencrypted packet; soft-recovering current segment');
                     try { this.decoder?.unpipe?.(this.gate); } catch { }
                     try { this.gate?.unpipe?.(this.wavWriter); } catch { }
                     try { this.wavWriter?.end?.(); } catch { }
-                    // 今のセグメントを閉じて、次セグメントへ（forced=true）
                     this._endSegment(true);
-                    return; // ここで止める（プロセスを落とさない）
+                    return;
                 }
                 console.error('opusStream error:', e);
             })
@@ -99,18 +96,17 @@ export class VoiceSession {
     }
 
     _startSegment() {
-        // ★ 追加：セッション終了後は新規セグメントを開始しない（最小ガード）
-        if (this.closed) {
-            return;
-        }
-        this._ending = false;                    // ★ reset
+        // ★ 追加：終了後は新規セグメントを開始しない（安全ガード）
+        if (this.closed) return;
+
+        this._ending = false;
         this.segIndex += 1;
         this.segStart = Date.now();
         this.baseId = this.baseId || `${this.userId}-${this.segStart}`;
 
         this.wavPath = path.join(this.recordingsDir, `${this.userId}-${this.segStart}-${this.segIndex}.wav`);
         this.decoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 48000 });
-        // ★ ここが重要：必ず mkdir -p してから FileWriter を開く
+
         try {
             fs.mkdirSync(path.dirname(this.wavPath), { recursive: true });
         } catch { }
@@ -118,13 +114,11 @@ export class VoiceSession {
             this.wavWriter = new wav.FileWriter(this.wavPath, { sampleRate: 48000, channels: 1 });
         } catch (e) {
             if (e?.code === 'ENOENT') {
-                // 極まれに競合で失敗する場合のワンモアトライ
                 try {
                     fs.mkdirSync(path.dirname(this.wavPath), { recursive: true });
                     this.wavWriter = new wav.FileWriter(this.wavPath, { sampleRate: 48000, channels: 1 });
                 } catch (e2) {
                     console.error('wavWriter open failed:', e2);
-                    // 書けないならこのセグメントはスキップ
                     this._scheduleNextSegment();
                     return;
                 }
@@ -136,31 +130,25 @@ export class VoiceSession {
         }
         console.log(`[seg] start user=${this.userId} seg=${this.segIndex}`);
 
-
-        // ★ 追加：RMSベースのノイズゲート（手前VAD）
+        // ★ 手前VAD
         this.gate = new RmsGate({
             sampleRate: 48000,
             frameMs: Number(process.env.VAD_FRAME_MS ?? 20),
-            openDb: Number(process.env.VAD_OPEN_DB ?? -38), // 開く閾値（大きいほど開きにくい）
-            closeDb: Number(process.env.VAD_CLOSE_DB ?? -45), // 閉じる閾値（小さいほど閉じやすい）
-            hangMs: Number(process.env.VAD_HANG_MS ?? 400), // 無音継続で閉じる時間
+            openDb: Number(process.env.VAD_OPEN_DB ?? -38),
+            closeDb: Number(process.env.VAD_CLOSE_DB ?? -45),
+            hangMs: Number(process.env.VAD_HANG_MS ?? 400),
         });
 
-        // ★ 手前VADが閉じた＝「一区切り」の合図 → セグメントを強制終了して再開
         this.gate.on('segmentEnd', () => {
-            // 既存の AfterSilence が働かない常時入力ケースでも終話できる
             if (!this._ending) {
                 this._ending = true;
-                // ここで今のセグメントを確実に閉じる
                 try { this.decoder?.unpipe?.(this.gate); } catch { }
                 try { this.gate?.unpipe?.(this.wavWriter); } catch { }
                 try { this.wavWriter?.end(); } catch { }
-                // 以降は通常の _endSegment 流れに委ねる
                 this._endSegment(true);
             }
         });
 
-        // ★ 配線：Opus→PCM→Gate→WAV
         this.opusStream
             .pipe(this.decoder)
             .on('error', (e) => console.error('decoder error:', e))
@@ -173,12 +161,21 @@ export class VoiceSession {
         this.forceTimer = setTimeout(() => this._endSegment(true), UTTER_MAX_MS);
     }
 
+    _emitTranscriptInitial(payload) {
+        if (!this.io) return;
+        this.io.emit('transcript', payload);
+    }
+
+    _emitTranscriptUpdate(payload) {
+        if (!this.io) return;
+        this.io.emit('transcript_update', payload);
+    }
+
     _endSegment(forced = false) {
         if (!this.wavWriter) return;
         const durMs = Date.now() - this.segStart;
         const tooShort = durMs < MIN_SEG_MS;
 
-        // 物理配線は gate.on('segmentEnd') で既に切っている可能性がある
         try { this.decoder?.unpipe?.(this.gate); } catch { }
         try { this.gate?.unpipe?.(this.wavWriter); } catch { }
         try { this.wavWriter.end(); } catch { }
@@ -207,17 +204,6 @@ export class VoiceSession {
                 if (cleanedText && cleanedText.length) {
                     const now = Date.now();
 
-                    // ① 時間窓デュープ
-                    const canon = canonicalizeForDup(cleanedText);
-                    this.recentCanon = this.recentCanon.filter(x => now - x.ts <= PHRASE_WINDOW_MS);
-                    if (this.recentCanon.some(x => x.canon === canon)) return;
-                    this.recentCanon.push({ canon, ts: now });
-                    if (this.recentCanon.length > PHRASE_MAX_KEEP) this.recentCanon.shift();
-
-                    // ② 直近完全一致デュープ
-                    if (this.lastText.text === cleanedText && now - this.lastText.ts < 3000) return;
-                    this.lastText = { text: cleanedText, ts: now };
-
                     // 発話者・UI初回flush
                     const sp = getSpeaker(this.userId);
                     const speakerName = sp?.name || 'Speaker';
@@ -226,30 +212,39 @@ export class VoiceSession {
                     const speakerAvatar = sp?.avatar;
                     const speakerIcon = sp?.icon;
                     const translateTarget = sp?.translateTo || CFG?.translate?.defaultTarget;
+                    const lang = sp?.lang || 'ja';
 
                     if (!this.firstFlushDone) {
                         this.firstFlushDone = true;
                         this.speakerName = speakerName;
-                        if (this.io) {
-                            this.io.emit('transcript', {
-                                id: this.baseId,
-                                userId: this.userId,
-                                name: speakerName,
-                                side: speakerSide,
-                                color: speakerColor,
-                                avatar: speakerAvatar,
-                                icon: speakerIcon,
-                                text: cleanedText,
-                                lang: sp?.lang || 'ja',
-                                ts: now,
-                            });
-                        }
+
+                        // ★ 初回：front へ transcript
+                        this._emitTranscriptInitial({
+                            id: this.baseId,
+                            userId: this.userId,
+                            name: speakerName,
+                            side: speakerSide,
+                            color: speakerColor,
+                            avatar: speakerAvatar,
+                            icon: speakerIcon,
+                            text: cleanedText,
+                            lang,
+                            ts: now,
+                        });
+                    } else {
+                        // ★ 2文目以降：front へ transcript_update（本文更新）
+                        this._emitTranscriptUpdate({
+                            id: this.baseId,
+                            userId: this.userId,
+                            text: cleanedText,
+                            ts: now,
+                        });
                     }
 
-                    // ★ ここから先は Discord メッセージを「置換更新」に統一
+                    // Discord 側は常に置換更新
                     await this._updateDiscordMessage(cleanedText);
 
-                    // 訳：クラス化バッファで “replace” 反映
+                    // 訳：クラス化バッファで “replace” 反映（front にも update を飛ばす）
                     const trEnabled = (CFG?.translate?.enabled ?? true);
                     if (trEnabled && translateTarget) {
                         this._ensureTrBuffer(translateTarget);
@@ -263,10 +258,15 @@ export class VoiceSession {
             }
         }, 100);
 
-        if (forced) this._scheduleNextSegment();
+        if (forced && !this.closed) this._scheduleNextSegment();
     }
+
     _scheduleNextSegment() {
-        setTimeout(() => this._startSegment(), SEG_GAP_MS);
+        if (this.closed) return;
+        setTimeout(() => {
+            if (this.closed) return;
+            this._startSegment();
+        }, SEG_GAP_MS);
     }
 
     async _updateDiscordMessage(delta) {
@@ -280,22 +280,18 @@ export class VoiceSession {
             const textChannel = await this.client.channels.fetch(CFG.discord.textChannelId);
             if (!textChannel || !textChannel.isTextBased()) return;
 
-            // 既存参照を“毎回”取り直す（constructor で逃したケースも拾う）
             this.sentMsgRef = this.sentMsgRef || USER_MSG_REF.get(this.userId) || null;
 
-            // 原文の累積（delta が空でも再描画できる）
             const d = String(delta || '').trim();
             this.origText = d ? (this.origText ? `${this.origText} ${d}`.trim() : d) : this.origText;
 
             const base = `**${this.speakerName || 'Speaker'}**: ${this.origText}`;
             const body = this.lastTr ? `${base}\n> _${this.lastTr}_` : base;
 
-            // 既存メッセージを優先して edit、無ければ send
             if (this.sentMsgRef) {
                 try {
                     await this.sentMsgRef.edit(body);
                 } catch (e) {
-                    // 既存が消えてる/編集できない → 新規作成に切替
                     this.sentMsgRef = await textChannel.send(body);
                     USER_MSG_REF.set(this.userId, this.sentMsgRef);
                 }
@@ -304,7 +300,6 @@ export class VoiceSession {
                 USER_MSG_REF.set(this.userId, this.sentMsgRef);
             }
 
-            // 念のため共有側も毎回更新
             USER_MSG_REF.set(this.userId, this.sentMsgRef);
         } catch (e) {
             console.error('❌ Failed to update message:', e);
@@ -320,8 +315,17 @@ export class VoiceSession {
             target,
             io: this.io,
             onTranslated: async (tr) => {
-                // ★ 置換（差し替え）に統一：最新訳を保持 → 本文再描画
+                // ★ 置換（差し替え）：最新訳を保持 → 本文再描画
                 this.lastTr = String(tr || '').trim();
+
+                // ★ front にも訳の update を通知
+                this._emitTranscriptUpdate({
+                    id: this.baseId,
+                    userId: this.userId,
+                    tr: { text: this.lastTr },
+                    ts: Date.now(),
+                });
+
                 await this._updateDiscordMessage(''); // delta無しでも再描画（訳だけ差し替え）
             }
         });
@@ -334,12 +338,18 @@ export class VoiceSession {
         try { this._endSegment(false); } catch { }
         if (this.forceTimer) { clearTimeout(this.forceTimer); this.forceTimer = null; }
 
+        // ★ ここを追加：このセッションで使ったメッセージ参照を捨てる
+        try {
+            this.sentMsgRef = null;
+            USER_MSG_REF.delete(this.userId);
+        } catch { }
+
         setTimeout(() => { this._dispose(); }, 50);
     }
 
     _dispose() {
         try { this.trBuffer?.dispose?.(); } catch { }
         this.trBuffer = null;
-        // USER_MSG_REF が保持しているので触らない
+        // USER_MSG_REF は共有キャッシュとして維持
     }
 }

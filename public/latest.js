@@ -15,6 +15,8 @@
 
     nowEl.className = `bubble ${displaySide}`;
     nowEl.innerHTML = '';
+    // ★ 表示中の transcript を特定するための ID を保持
+    nowEl.dataset.id = e.id || `${id}`;  // e.id が無ければ userId ベース
 
     // 吹き出しの“しっぽ”位置（%）
     if (typeof cfg.x === 'number') {
@@ -58,18 +60,30 @@
   }
 
   function onUpdate(upd) {
-    const { id, tr } = upd || {};
-    if (!id || !tr?.text) return;
-    const trEl = nowEl.querySelector('.tr');
-    if (trEl) trEl.textContent = tr.text;
-    else {
-      const el = document.createElement('div');
-      el.className = 'tr';
-      el.textContent = tr.text;
-      nowEl.appendChild(el);
+    const { id, tr, text } = upd || {};
+    // ★ 今表示している transcript と一致するものだけ更新
+    if (!id || nowEl.dataset.id !== String(id)) return;
+
+    // ★ 本文の差し替え：payload に text キーが「存在」する場合のみ（空文字も反映）
+    if (Object.prototype.hasOwnProperty.call(upd, 'text')) {
+      const textEl = nowEl.querySelector('.text');
+      if (textEl) textEl.textContent = (typeof text === 'string') ? text : '';
     }
-    // フェード延長はしない（好みで呼び出してOK）
+
+    // ★ 翻訳の差し替え：text の有無に依存させない
+    if (tr && typeof tr.text === 'string') {
+      const trEl = nowEl.querySelector('.tr');
+      if (trEl) trEl.textContent = tr.text;
+      else {
+        const el = document.createElement('div');
+        el.className = 'tr';
+        el.textContent = tr.text;
+        nowEl.appendChild(el);
+      }
+    }
+    // フェード延長は任意（必要ならここで nowEl.classList.remove('is-fading') など）
   }
 
+  // ★ ソケットの配線は関数定義の「外」で一度だけ行う
   G.wireSocket({ onTranscript, onUpdate });
 })();

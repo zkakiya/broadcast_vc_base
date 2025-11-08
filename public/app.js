@@ -4,6 +4,32 @@
   if (!window.BVC) window.BVC = {};
   const GLOBAL = window.BVC;
 
+  // ==== Metrics (new) ====
+  // 二重読込でも上書きされないよう既存を温存
+  GLOBAL.metrics = GLOBAL.metrics || {
+    transcripts: 0,
+    updates: 0,
+    last: null,
+    lastAt: null,
+    connectCount: 0,
+    disconnectCount: 0,
+  };
+  // 外部から簡単に参照するための関数（コンソールで BVCgetMetrics() ）
+  window.BVCgetMetrics = function () {
+    const m = GLOBAL.metrics;
+    // 参照時に最新を返すだけ
+    return JSON.parse(JSON.stringify(m));
+  };
+  // ついでにリセット
+  GLOBAL.resetMetrics = function () {
+    GLOBAL.metrics.transcripts = 0;
+    GLOBAL.metrics.updates = 0;
+    GLOBAL.metrics.last = null;
+    GLOBAL.metrics.lastAt = null;
+    GLOBAL.metrics.connectCount = 0;
+    GLOBAL.metrics.disconnectCount = 0;
+  };
+
   // ---- URL params (fade/font/mode) ----
   const qs = new URLSearchParams(location.search);
   GLOBAL.fadeSec = Number(qs.get('fade') || 30);
@@ -16,9 +42,17 @@
     console.error('[app] socket.io client not found');
     return;
   }
-  GLOBAL.socket = io();
-  GLOBAL.socket.on('connect', () => console.log('[app] socket connected', GLOBAL.socket.id));
-  GLOBAL.socket.on('disconnect', () => console.log('[app] disconnected'));
+  // 既に接続がある場合は使い回し
+  GLOBAL.socket = GLOBAL.socket || io();
+
+  GLOBAL.socket.on('connect', () => {
+    GLOBAL.metrics.connectCount += 1;
+    console.log('[app] socket connected', GLOBAL.socket.id);
+  });
+  GLOBAL.socket.on('disconnect', () => {
+    GLOBAL.metrics.disconnectCount += 1;
+    console.log('[app] disconnected');
+  });
 
   // ---- Mode decide (URL > /healthz > default) ----
   async function decideMode() {
@@ -36,7 +70,7 @@
   }
 
   // ---- Position config load (auto switch) ----
-  GLOBAL.POSITION_CONFIG = {};
+  GLOBAL.POSITION_CONFIG = GLOBAL.POSITION_CONFIG || {};
   async function loadPositionConfig() {
     const mode = await decideMode();
     const path = mode === 'single' ? '/position.single.json' : '/position.json';
@@ -57,9 +91,9 @@
   }
 
   // ---- Avatars deck management ----
-  const speakers = new Map(); // id -> { el, name, color, pos }
+  const speakers = GLOBAL.speakers || new Map(); // id -> { el, name, color, pos }
   GLOBAL.speakers = speakers;
-  GLOBAL.currentActiveId = null;
+  GLOBAL.currentActiveId = GLOBAL.currentActiveId || null;
 
   function asId(v) { return String(v); }
   GLOBAL.asId = asId;
@@ -91,9 +125,6 @@
     el.style.top = `${pos.y}%`;
     el.style.setProperty('--scale', pos.scale || 1);
 
-    // === マスク適用部分 ===
-    // 明示的にcfg.maskがある場合 → それを使用
-    // 無い場合 → srcをそのままマスクとして使用（PNGのアルファを利用）
     const maskSrc = cfg?.mask || src;
     if (maskSrc) {
       el.style.webkitMaskImage = `url(${maskSrc})`;
@@ -106,10 +137,8 @@
       el.style.maskPosition = 'center';
     }
 
-    // === デッキに追加 ===
     deck.appendChild(el);
 
-    // デバッグクリック：クリックでアクティブ化
     el.addEventListener('click', () => {
       setActive(id);
       startFadeTimer(() => {
@@ -163,16 +192,39 @@
   }
   GLOBAL.startFadeTimer = startFadeTimer;
 
-  // ---- Wire socket events (dedup) ----
-  let _wired = false;
+  // ---- Wire socket events (dedup & metrics) ----
+  // _wired は GLOBAL 側に保持して二重登録を防ぐ
+  if (typeof GLOBAL._wired === 'undefined') GLOBAL._wired = false;
+
   GLOBAL.wireSocket = (handlers) => {
-    if (_wired) return;
-    _wired = true;
+    if (GLOBAL._wired) return;
+    GLOBAL._wired = true;
+
     const s = GLOBAL.socket;
     if (!s) { console.error('[app] GLOBAL.socket missing'); return; }
+
     const { onTranscript, onUpdate } = handlers || {};
-    if (onTranscript) s.on('transcript', onTranscript);
-    if (onUpdate) s.on('transcript_update', onUpdate);
+
+    // 低レベルでログ＋カウンタ（onTranscript/onUpdate 無くても回る）
+    s.on('transcript', (p) => {
+      GLOBAL.metrics.transcripts += 1;
+      GLOBAL.metrics.last = p;
+      GLOBAL.metrics.lastAt = Date.now();
+      console.log('[recv] transcript', p);
+      onTranscript && onTranscript(p);
+    });
+
+    s.on('transcript_update', (p) => {
+      GLOBAL.metrics.updates += 1;
+      GLOBAL.metrics.last = p;
+      GLOBAL.metrics.lastAt = Date.now();
+      console.log('[recv] transcript_update', p);
+      onUpdate && onUpdate(p);
+    });
+
+    // 互換: ハンドラがあればイベントを直接も配線（重複しないよう注意）
+    if (onTranscript) s.on('transcript_for_handler', onTranscript);
+    if (onUpdate) s.on('transcript_update_for_handler', onUpdate);
   };
 
   // ---- Render all avatars at startup (dimmed) ----
