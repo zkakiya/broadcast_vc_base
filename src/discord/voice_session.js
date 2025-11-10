@@ -12,12 +12,11 @@ import { getSpeaker } from '../registry/speakers.js';
 import { TranslationBuffer } from './translation_buffer.js';
 import { RmsGate } from './rms_gate.js';
 
-// ★ ユーザーごとに Discord の送信メッセージを共有
+// ユーザーごとに Discord の送信メッセージを共有
 const USER_MSG_REF = new Map(); // userId -> Message
-// userId -> boolean（送信/更新ロック）
-const USER_MSG_LOCK = new Map();
+const USER_MSG_LOCK = new Map(); // userId -> boolean
 
-// ★ CFG.asr が未設定でも破綻しない安全デフォルト
+// デフォルト
 const VAD_SILENCE_MS = CFG.asr?.vadSilenceMs ?? 600;
 const UTTER_MAX_MS = CFG.asr?.utterMaxMs ?? 12000;
 const SEG_GAP_MS = CFG.asr?.segGapMs ?? 180;
@@ -25,6 +24,9 @@ const PHRASE_WINDOW_MS = CFG.asr?.phraseWindowMs ?? 6000;
 const PHRASE_MAX_KEEP = CFG.asr?.phraseMaxKeep ?? 12;
 const MIN_SEG_MS = Number(process.env.MIN_SEG_MS ?? 900);
 const MIN_WAV_BYTES = Number(process.env.MIN_WAV_BYTES ?? 48000);
+
+const nowTs = () => Date.now();
+const msSince = (ts) => (ts ? (Date.now() - ts) : null);
 
 export class VoiceSession {
     /**
@@ -41,21 +43,21 @@ export class VoiceSession {
         this.userId = String(userId);
         this.io = io;
         this.recordingsDir = recordingsDir;
-
         try { fs.mkdirSync(this.recordingsDir, { recursive: true }); } catch { }
 
         // runtime
         this.opusStream = null;
+        this.decoder = null;
+        this.gate = null;
+        this.wavWriter = null;
+
         this.segIndex = 0;
         this.segStart = 0;
         this.baseId = null;
         this.firstFlushDone = false;
 
         this.wavPath = null;
-        this.wavWriter = null;
-        this.decoder = null;
         this.forceTimer = null;
-        this.gate = null;
 
         this.recentCanon = []; // { canon, ts }
         this.lastText = { text: null, ts: 0 };
@@ -69,6 +71,11 @@ export class VoiceSession {
         this.origText = '';
         this.lastTr = '';
         this.speakerName = '';
+
+        // 観測
+        this._segBytes = 0;      // gate→wav に流れたPCM byte数
+        this._segFrames = 0;     // 20msフレーム相当数（概算）
+        this._firstPcmAt = 0;    // 最初のPCM到着時刻
     }
 
     start() {
@@ -82,9 +89,8 @@ export class VoiceSession {
                 const msg = String(e?.message || e || '');
                 if (msg.includes('UnencryptedWhenPassthroughDisabled')) {
                     console.warn('[voice] received unencrypted packet; soft-recovering current segment');
-                    try { this.decoder?.unpipe?.(this.gate); } catch { }
-                    try { this.gate?.unpipe?.(this.wavWriter); } catch { }
-                    try { this.wavWriter?.end?.(); } catch { }
+                    // 物理切断
+                    this._stopPipes();
                     this._endSegment(true);
                     return;
                 }
@@ -96,7 +102,6 @@ export class VoiceSession {
     }
 
     _startSegment() {
-        // ★ 追加：終了後は新規セグメントを開始しない（安全ガード）
         if (this.closed) return;
 
         this._ending = false;
@@ -104,33 +109,25 @@ export class VoiceSession {
         this.segStart = Date.now();
         this.baseId = this.baseId || `${this.userId}-${this.segStart}`;
 
-        this.wavPath = path.join(this.recordingsDir, `${this.userId}-${this.segStart}-${this.segIndex}.wav`);
-        this.decoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 48000 });
+        // 観測カウンタ初期化
+        this._segBytes = 0;
+        this._segFrames = 0;
+        this._firstPcmAt = 0;
 
-        try {
-            fs.mkdirSync(path.dirname(this.wavPath), { recursive: true });
-        } catch { }
+        this.wavPath = path.join(this.recordingsDir, `${this.userId}-${this.segStart}-${this.segIndex}.wav`);
+        try { fs.mkdirSync(path.dirname(this.wavPath), { recursive: true }); } catch { }
+
         try {
             this.wavWriter = new wav.FileWriter(this.wavPath, { sampleRate: 48000, channels: 1 });
         } catch (e) {
-            if (e?.code === 'ENOENT') {
-                try {
-                    fs.mkdirSync(path.dirname(this.wavPath), { recursive: true });
-                    this.wavWriter = new wav.FileWriter(this.wavPath, { sampleRate: 48000, channels: 1 });
-                } catch (e2) {
-                    console.error('wavWriter open failed:', e2);
-                    this._scheduleNextSegment();
-                    return;
-                }
-            } else {
-                console.error('wavWriter open failed:', e);
-                this._scheduleNextSegment();
-                return;
-            }
+            console.error('wavWriter open failed:', e);
+            this._scheduleNextSegment();
+            return;
         }
+
         console.log(`[seg] start user=${this.userId} seg=${this.segIndex}`);
 
-        // ★ 手前VAD
+        // VAD
         this.gate = new RmsGate({
             sampleRate: 48000,
             frameMs: Number(process.env.VAD_FRAME_MS ?? 20),
@@ -139,16 +136,28 @@ export class VoiceSession {
             hangMs: Number(process.env.VAD_HANG_MS ?? 400),
         });
 
+        // 観測：gateのdataで流量カウント
+        this.gate.on('data', (chunk) => {
+            if (!chunk?.length) return;
+            this._segBytes += chunk.length;
+            if (!this._firstPcmAt) this._firstPcmAt = nowTs();
+            // 20msフレーム概算: 48kHz * 0.02s * 2byte = 1920B
+            this._segFrames = Math.round(this._segBytes / 1920);
+        });
+
+        // gate閉: セグメントを終わらせる
         this.gate.on('segmentEnd', () => {
             if (!this._ending) {
                 this._ending = true;
-                try { this.decoder?.unpipe?.(this.gate); } catch { }
-                try { this.gate?.unpipe?.(this.wavWriter); } catch { }
-                try { this.wavWriter?.end(); } catch { }
+                this._stopPipes();
                 this._endSegment(true);
             }
         });
 
+        // 配線
+        this.decoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 48000 });
+
+        // opusStream → decoder → gate → wavWriter
         this.opusStream
             .pipe(this.decoder)
             .on('error', (e) => console.error('decoder error:', e))
@@ -157,54 +166,99 @@ export class VoiceSession {
             .pipe(this.wavWriter)
             .on('error', (e) => console.error('wavWriter error:', e));
 
+        // 強制終了タイマ
         if (this.forceTimer) clearTimeout(this.forceTimer);
         this.forceTimer = setTimeout(() => this._endSegment(true), UTTER_MAX_MS);
+    }
+
+    // すべての配線を安全に停止
+    _stopPipes() {
+        try { this.opusStream?.unpipe?.(this.decoder); } catch { }
+        try { this.decoder?.unpipe?.(this.gate); } catch { }
+        try { this.gate?.unpipe?.(this.wavWriter); } catch { }
+
+        try { this.wavWriter?.end?.(); } catch { }
+        try { this.decoder?.removeAllListeners?.(); } catch { }
+        try { this.gate?.removeAllListeners?.(); } catch { }
+
+        // decoder/gate は destroy して内部バッファも破棄
+        try { this.decoder?.destroy?.(); } catch { }
+        try { this.gate?.destroy?.(); } catch { }
+
+        this.decoder = null;
+        this.gate = null;
+        this.wavWriter = null;
     }
 
     _emitTranscriptInitial(payload) {
         if (!this.io) return;
         this.io.emit('transcript', payload);
     }
-
     _emitTranscriptUpdate(payload) {
         if (!this.io) return;
         this.io.emit('transcript_update', payload);
     }
 
     _endSegment(forced = false) {
-        if (!this.wavWriter) return;
+        if (!this.wavWriter && !this.decoder && !this.gate) {
+            // 既に止め済み
+        } else {
+            this._stopPipes();
+        }
+
         const durMs = Date.now() - this.segStart;
         const tooShort = durMs < MIN_SEG_MS;
 
-        try { this.decoder?.unpipe?.(this.gate); } catch { }
-        try { this.gate?.unpipe?.(this.wavWriter); } catch { }
-        try { this.wavWriter.end(); } catch { }
-        if (this.forceTimer) { clearTimeout(this.forceTimer); this.forceTimer = null; }
-
         const thisWav = this.wavPath;
-        this.wavWriter = null; this.decoder = null; this.wavPath = null; this.gate = null;
+        const segBytes = this._segBytes;
+        const segFrames = this._segFrames;
+        const firstPcmDelay = (this._firstPcmAt ? (this._firstPcmAt - this.segStart) : null);
 
-        console.log(`[seg] end user=${this.userId} forced=${forced} dur=${durMs}ms short=${tooShort}`);
+        this.wavPath = null;
+
+        console.log(`[seg] end user=${this.userId} forced=${forced} dur=${durMs}ms short=${tooShort} pcmBytes=${segBytes} estFrames=${segFrames} firstPcmDelayMs=${firstPcmDelay}`);
+
+        if (this.forceTimer) { clearTimeout(this.forceTimer); this.forceTimer = null; }
 
         setTimeout(async () => {
             try {
-                if (tooShort) { try { if (fs.existsSync(thisWav)) fs.unlinkSync(thisWav); } catch { }; return; }
-                const st = fs.statSync(thisWav);
-                if (st.size < MIN_WAV_BYTES) {
+                if (tooShort) { try { if (thisWav && fs.existsSync(thisWav)) fs.unlinkSync(thisWav); } catch { }; return; }
+
+                const st = thisWav ? fs.statSync(thisWav) : null;
+                if (process.env.ASR_TRACE) {
+                    if (thisWav && st) console.log('[wav] stat', { path: thisWav, size: st.size });
+                }
+                if (!st || st.size < MIN_WAV_BYTES) {
                     if (process.env.SHORT_WAV_LOG !== '0') {
-                        console.log(`(skip) short wav: ${st.size}B < ${MIN_WAV_BYTES}B`);
+                        console.log(`(skip) short wav: ${st ? st.size : 0}B < ${MIN_WAV_BYTES}B`);
                     }
-                    try { fs.unlinkSync(thisWav); } catch { }
+                    try { if (thisWav && fs.existsSync(thisWav)) fs.unlinkSync(thisWav); } catch { }
                     return;
                 }
 
                 const recognizedText = await transcribeAudioGPU(thisWav);
                 const cleanedText = sanitizeASR(recognizedText, { protect: getPersonProtectSet() });
 
+                if (process.env.ASR_TRACE) {
+                    const rawLen = (recognizedText || '').length || 0;
+                    const cleanLen = (cleanedText || '').length || 0;
+                    console.log('[asr] text', { rawLen, cleanLen, text: cleanLen ? cleanedText : null });
+                }
+
                 if (cleanedText && cleanedText.length) {
                     const now = Date.now();
 
-                    // 発話者・UI初回flush
+                    // デュープ抑制
+                    const canon = canonicalizeForDup(cleanedText);
+                    this.recentCanon = this.recentCanon.filter(x => now - x.ts <= PHRASE_WINDOW_MS);
+                    if (this.recentCanon.some(x => x.canon === canon)) return;
+                    this.recentCanon.push({ canon, ts: now });
+                    if (this.recentCanon.length > PHRASE_MAX_KEEP) this.recentCanon.shift();
+
+                    if (this.lastText.text === cleanedText && now - this.lastText.ts < 3000) return;
+                    this.lastText = { text: cleanedText, ts: now };
+
+                    // 発話者・初回flush
                     const sp = getSpeaker(this.userId);
                     const speakerName = sp?.name || 'Speaker';
                     const speakerSide = sp?.side;
@@ -218,7 +272,6 @@ export class VoiceSession {
                         this.firstFlushDone = true;
                         this.speakerName = speakerName;
 
-                        // ★ 初回：front へ transcript
                         this._emitTranscriptInitial({
                             id: this.baseId,
                             userId: this.userId,
@@ -231,30 +284,38 @@ export class VoiceSession {
                             lang,
                             ts: now,
                         });
+                        if (process.env.ASR_TRACE) {
+                            console.log('[emit] transcript', { id: this.baseId, len: cleanedText.length });
+                        }
                     } else {
-                        // ★ 2文目以降：front へ transcript_update（本文更新）
                         this._emitTranscriptUpdate({
                             id: this.baseId,
                             userId: this.userId,
                             text: cleanedText,
                             ts: now,
                         });
+                        if (process.env.ASR_TRACE) {
+                            console.log('[emit] transcript_update', { id: this.baseId, hasText: true, hasTr: false, textLen: cleanedText.length });
+                        }
                     }
 
-                    // Discord 側は常に置換更新
+                    // Discord 側は置換更新
+                    if (process.env.ASR_TRACE) console.log('[discord] update', { appendLen: cleanedText.length });
                     await this._updateDiscordMessage(cleanedText);
 
-                    // 訳：クラス化バッファで “replace” 反映（front にも update を飛ばす）
+                    // 訳
                     const trEnabled = (CFG?.translate?.enabled ?? true);
                     if (trEnabled && translateTarget) {
                         this._ensureTrBuffer(translateTarget);
                         this.trBuffer.append(cleanedText + ' ');
                     }
+                } else {
+                    if (process.env.ASR_TRACE) console.log('[skip] emptyText');
                 }
             } catch (e) {
                 console.error('❌ Whisper error:', e);
             } finally {
-                try { if (fs.existsSync(thisWav)) fs.unlinkSync(thisWav); } catch { }
+                try { if (thisWav && fs.existsSync(thisWav)) fs.unlinkSync(thisWav); } catch { }
             }
         }, 100);
 
@@ -270,7 +331,6 @@ export class VoiceSession {
     }
 
     async _updateDiscordMessage(delta) {
-        // --- 簡易ロック（userId 単位で直列化） ---
         while (USER_MSG_LOCK.get(this.userId)) {
             await new Promise(r => setTimeout(r, 10));
         }
@@ -291,7 +351,7 @@ export class VoiceSession {
             if (this.sentMsgRef) {
                 try {
                     await this.sentMsgRef.edit(body);
-                } catch (e) {
+                } catch {
                     this.sentMsgRef = await textChannel.send(body);
                     USER_MSG_REF.set(this.userId, this.sentMsgRef);
                 }
@@ -299,8 +359,6 @@ export class VoiceSession {
                 this.sentMsgRef = await textChannel.send(body);
                 USER_MSG_REF.set(this.userId, this.sentMsgRef);
             }
-
-            USER_MSG_REF.set(this.userId, this.sentMsgRef);
         } catch (e) {
             console.error('❌ Failed to update message:', e);
         } finally {
@@ -315,18 +373,15 @@ export class VoiceSession {
             target,
             io: this.io,
             onTranslated: async (tr) => {
-                // ★ 置換（差し替え）：最新訳を保持 → 本文再描画
                 this.lastTr = String(tr || '').trim();
-
-                // ★ front にも訳の update を通知
                 this._emitTranscriptUpdate({
                     id: this.baseId,
                     userId: this.userId,
                     tr: { text: this.lastTr },
                     ts: Date.now(),
                 });
-
-                await this._updateDiscordMessage(''); // delta無しでも再描画（訳だけ差し替え）
+                if (process.env.ASR_TRACE) console.log('[discord] update:translation');
+                await this._updateDiscordMessage('');
             }
         });
     }
@@ -338,7 +393,7 @@ export class VoiceSession {
         try { this._endSegment(false); } catch { }
         if (this.forceTimer) { clearTimeout(this.forceTimer); this.forceTimer = null; }
 
-        // ★ ここを追加：このセッションで使ったメッセージ参照を捨てる
+        // このセッションのメッセージ参照は捨てる（次会話で新規に）
         try {
             this.sentMsgRef = null;
             USER_MSG_REF.delete(this.userId);
@@ -350,6 +405,5 @@ export class VoiceSession {
     _dispose() {
         try { this.trBuffer?.dispose?.(); } catch { }
         this.trBuffer = null;
-        // USER_MSG_REF は共有キャッシュとして維持
     }
 }

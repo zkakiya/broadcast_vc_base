@@ -16,6 +16,7 @@ export const CFG = {
   mode: process.env.MODE || 'multi',
   port: num(process.env.PORT, 8080),
   wsPort: num(process.env.WS_PORT, 8081),
+  cleanupDir: process.env.RECORDINGS_DIR || 'src/recordings',
   // ...他の基本項目は同様...
   discord: {
     token: process.env.DISCORD_TOKEN,
