@@ -78,6 +78,7 @@ export class VoiceSession {
         this.segIndex += 1;
         this.segStart = Date.now();
         this.baseId = this.baseId || `${this.userId}-${this.segStart}`;
+        this.firstFlushDone = false;
 
         this.wavPath = path.join(this.recordingsDir, `${this.userId}-${this.segStart}-${this.segIndex}.wav`);
         this.decoder = new prism.opus.Decoder({ frameSize: 960, channels: 1, rate: 48000 });
