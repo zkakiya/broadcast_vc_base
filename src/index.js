@@ -5,6 +5,24 @@ import { startWebServer } from './web/server.js';
 import { cleanRecordingsDir } from './utils/cleanup.js';
 import * as voice from './discord/voice.js';
 
+import pkg from '../package.json' with { type: 'json' };
+import { createRequire } from 'module';
+const req = createRequire(import.meta.url);
+
+function safeRequire(name) {
+  try { return req(name); } catch { return null; }
+}
+
+const v = {
+  node: process.version,
+  app: pkg?.version ?? '0.0.0',
+  discordjs: safeRequire('discord.js')?.version ?? 'n/a',
+  voice: safeRequire('@discordjs/voice')?.version ?? 'n/a',
+  opus: safeRequire('@discordjs/opus') ? 'yes' : 'no',
+  sodium: safeRequire('libsodium-wrappers') ? 'yes' : 'no',
+};
+console.log('[boot] versions:', v);
+
 assertConfig();
 
 (async () => {

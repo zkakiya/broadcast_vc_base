@@ -11,7 +11,7 @@ import {
   VoiceConnectionStatus,
 } from '@discordjs/voice';
 
-import { client } from './client.js';
+import client from './client.js';
 import { CFG } from '../config.js';
 import { VoiceSession } from './voice_session.js';
 
@@ -153,10 +153,20 @@ export async function joinAndRecordVC() {
     }
   });
 
-  // speaking終了：ガード解除（次の発話で新セッションを作れるように）
+  // speaking終了：確実にガード解除
   receiver.speaking.on('end', (userIdRaw) => {
     const userId = String(userIdRaw);
-    sessions.delete(userId);
-    console.log(`⏹️ ${userId} end of speech`);
+    if (sessions.has(userId)) {
+      sessions.delete(userId);
+      console.log(`⏹️ ${userId} end of speech (session cleared)`);
+    } else {
+      console.log(`⏹️ ${userId} end (no active session, ignored)`);
+    }
+    // listener leak防止
+    if (receiver.speaking.listenerCount('start') > 50) {
+      console.warn('[voice] speaking listener count high, resetting');
+      receiver.speaking.removeAllListeners('start');
+      receiver.speaking.removeAllListeners('end');
+    }
   });
 }
