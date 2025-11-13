@@ -287,7 +287,8 @@ export class VoiceSession {
                     // 訳は確定後に開始・差し替え
                     const trEnabled = (CFG?.translate?.enabled ?? true);
                     if (trEnabled && translateTarget) {
-                        this._ensureTrBuffer(translateTarget);
+                        // ← この発話の baseId を翻訳バッファに渡す
+                        this._ensureTrBuffer(translateTarget, endedBaseId);
                         this.trBuffer.append(cleanedText + ' ');
                     }
                 }
@@ -332,8 +333,10 @@ export class VoiceSession {
             const body = this.lastTr ? `${base}\n> _${this.lastTr}_` : base;
 
             // === Discord は「新規→確定1回のみ」：既に送信済みなら編集しない ===
+            // === Discord メッセージ：初回は send、その後は edit で上書き ===
             if (this.sentMsgRef) {
-                // 何もしない（edit 禁止）
+                // 本文 or 訳が変わったときは既存メッセージを編集
+                await this.sentMsgRef.edit(body);
             } else {
                 this.sentMsgRef = await textChannel.send(body);
                 BASE_MSG_REF.set(id, this.sentMsgRef);
@@ -350,17 +353,27 @@ export class VoiceSession {
         }
     }
 
-    _ensureTrBuffer(target) {
+    _ensureTrBuffer(target, idForEmit) {
         if (this.trBuffer) return;
-        const id = this.baseId;
+
+        // この発話で固定する ID（endedBaseId 優先、なければ現在の baseId）
+        const id = idForEmit || this.baseId || null;
+
         this.trBuffer = new TranslationBuffer({
             id,
             target,
             io: this.io,
             onTranslated: async (tr) => {
+                // 最新訳を保持
                 this.lastTr = String(tr || '').trim();
-                // Discord の編集は行わない（確定1回のみ）。OBS 等の io 反映は TranslationBuffer 側の emit に任せる。
-                // await this._updateDiscordMessage(''); // ←無効化
+
+                // Discord メッセージを訳付きで更新
+                // delta は空文字にして、本文は this.origText / this.lastTr から組み立て
+                try {
+                    await this._updateDiscordMessage('', id);
+                } catch (e) {
+                    console.error('❌ Failed to update translated message:', e);
+                }
             }
         });
     }

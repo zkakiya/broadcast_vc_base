@@ -4,8 +4,9 @@
   if (!window.BVC) window.BVC = {};
   const GLOBAL = window.BVC;
 
-  // ---- URL params (fade/font/mode) ----
+  // ---- URL params (fade/font/mode/debug) ----
   const qs = new URLSearchParams(location.search);
+  if (qs.get('debug') === '1') window.DEBUG_SOCKET = 1; // ?debug=1 でログON
   GLOBAL.fadeSec = Number(qs.get('fade') || 30);
   GLOBAL.fontPx = Number(qs.get('font') || 36);
   let RUN_MODE = (qs.get('mode') || '').toLowerCase(); // 'single'|'multi'|''
@@ -16,9 +17,17 @@
     console.error('[app] socket.io client not found');
     return;
   }
-  GLOBAL.socket = io();
-  GLOBAL.socket.on('connect', () => console.log('[app] socket connected', GLOBAL.socket.id));
-  GLOBAL.socket.on('disconnect', () => console.log('[app] disconnected'));
+
+  // socket.io シングルトン
+  let _socket = null;
+  function getSocket() {
+    if (_socket) return _socket;
+    _socket = io();
+    GLOBAL.socket = _socket; // 互換用に公開
+    _socket.on('connect', () => console.log('[app] socket connected', _socket.id));
+    _socket.on('disconnect', () => console.log('[app] disconnected'));
+    return _socket;
+  }
 
   // ---- Mode decide (URL > /healthz > default) ----
   async function decideMode() {
@@ -92,8 +101,6 @@
     el.style.setProperty('--scale', pos.scale || 1);
 
     // === マスク適用部分 ===
-    // 明示的にcfg.maskがある場合 → それを使用
-    // 無い場合 → srcをそのままマスクとして使用（PNGのアルファを利用）
     const maskSrc = cfg?.mask || src;
     if (maskSrc) {
       el.style.webkitMaskImage = `url(${maskSrc})`;
@@ -165,14 +172,73 @@
 
   // ---- Wire socket events (dedup) ----
   let _wired = false;
-  GLOBAL.wireSocket = (handlers) => {
+  // transcript（確定）/ transcript_partial（部分）/ transcript_update（訳 or パーシャル）を束ねる
+  GLOBAL.wireSocket = (handlers = {}) => {
     if (_wired) return;
     _wired = true;
-    const s = GLOBAL.socket;
-    if (!s) { console.error('[app] GLOBAL.socket missing'); return; }
-    const { onTranscript, onUpdate } = handlers || {};
-    if (onTranscript) s.on('transcript', onTranscript);
-    if (onUpdate) s.on('transcript_update', onUpdate);
+    const s = getSocket();
+    if (!s) {
+      console.error('[app] socket missing');
+      return;
+    }
+
+    const { onTranscript, onPartial, onUpdate } = handlers || {};
+
+    // 確定テキスト
+    if (onTranscript) {
+      s.on('transcript', onTranscript);        // 旧来の確定イベント
+      s.on('transcript_final', onTranscript);  // 将来の拡張用（あれば拾う）
+    }
+
+    // 部分（パーシャル）
+    if (onPartial) {
+      s.on('transcript_partial', onPartial);
+    }
+
+    // 訳＆パーシャル兼用の transcript_update:
+    //  - { id, tr: { text, target } } → 訳更新
+    //  - { user, baseId, text }       → パーシャル（将来のストリーミングASR）
+    if (onUpdate || onPartial) {
+      s.on('transcript_update', (p) => {
+        if (!p) return;
+
+        // 訳更新
+        if (p.tr && typeof p.tr.text === 'string') {
+          if (onUpdate) onUpdate(p);
+          return;
+        }
+
+        // パーシャル
+        if (p.user && p.baseId && typeof p.text === 'string') {
+          if (onPartial) onPartial(p);
+          return;
+        }
+
+        // どれでもない場合は無視
+      });
+    }
+
+    // 将来 server 側を translation_update に変えた場合に備えて互換で listen
+    if (onUpdate) {
+      s.on('translation_update', onUpdate);
+    }
+
+    // デバッグログ
+    if (window.DEBUG_SOCKET) {
+      if (onTranscript) {
+        s.on('transcript', (p) => console.log('SOCKET: transcript', p));
+        s.on('transcript_final', (p) => console.log('SOCKET: transcript_final', p));
+      }
+      if (onPartial) {
+        s.on('transcript_partial', (p) => console.log('SOCKET: partial', p));
+      }
+      if (onUpdate || onPartial) {
+        s.on('transcript_update', (p) => console.log('SOCKET: update(raw)', p));
+      }
+      if (onUpdate) {
+        s.on('translation_update', (p) => console.log('SOCKET: translation_update', p));
+      }
+    }
   };
 
   // ---- Render all avatars at startup (dimmed) ----
