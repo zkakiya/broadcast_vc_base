@@ -35,6 +35,10 @@
           }
         });
       }
+      // ★ 追加：パーシャルでも同じ挙動（点灯を途切れさせない）
+      function onPartial(payload) {
+        onTranscript(payload);
+      }
       function onUpdate(_) { /* 何もしない（バブル無し） */ }
 
       G.wireSocket({ onTranscript, onUpdate });

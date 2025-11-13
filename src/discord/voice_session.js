@@ -11,6 +11,7 @@ import { sanitizeASR, canonicalizeForDup } from '../utils/text_sanitize.js';
 import { getPersonProtectSet } from '../utils/dictionary.js';
 import { getSpeaker } from '../registry/speakers.js';
 import { TranslationBuffer } from './translation_buffer.js';
+import { StreamingTranscriber } from '../core/streaming_transcriber.js';
 
 // === プロセス内・ユーザー毎の同時起動ガード ===
 // userId -> { iid: string, started: boolean }
@@ -77,6 +78,7 @@ export class VoiceSession {
         this.closed = false;
         this._subscribed = false;       // 購読開始済みフラグ
         this._lastDecryptErrAt = 0;     // 復号失敗のレート制限用
+        this._streamer = null;
         // 表示用の累積
         this.origText = '';
         this.lastTr = '';
@@ -84,6 +86,31 @@ export class VoiceSession {
         // ★ インスタンス識別子（ログ・レース回避用）
         this._iid = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
         if (process.env.WHISPER_DEBUG === '1') console.log('[vs:ctor]', this.userId, this._iid);
+    }
+
+    async _failCurrentSegment(reason = 'abort') {
+        const baseId = this.baseId;
+        if (process.env.WHISPER_DEBUG === '1') {
+            console.warn('[seg:abort]', { user: this.userId, baseId, reason });
+        }
+        // デコーダ/ライタを安全に停止
+        try { this.decoder?.unpipe?.(this.wavWriter); } catch { }
+        try { this.wavWriter?.end?.(); } catch { }
+        if (this.forceTimer) { clearTimeout(this.forceTimer); this.forceTimer = null; }
+        if (this._inactTimer) { clearInterval(this._inactTimer); this._inactTimer = null; }
+        try { await this._streamer?.finalize?.(); } catch { }
+        this._streamer = null;
+
+        // wav 一時ファイルを掃除
+        const wav = this.wavPath;
+        this.decoder = null; this.wavWriter = null; this.wavPath = null;
+        try { if (wav && fs.existsSync(wav)) fs.unlinkSync(wav); } catch { }
+
+        // ★ 発話ガード解放（何があっても解放する）
+        const g = ACTIVE_SEG.get(this.userId);
+        if (g && g.baseId === baseId) ACTIVE_SEG.delete(this.userId);
+        // 次のセグメントを許す（小さめのギャップ）
+        this._scheduleNextSegment();
     }
 
     start() {
@@ -138,6 +165,8 @@ export class VoiceSession {
                 console.error('opusStream error:', e);
                 this._lastDecryptErrAt = now;
             }
+            // ★ 復号エラー時は現在のセグメントを強制中断してガード解放
+            try { await this._failCurrentSegment('decrypt'); } catch { }
             // Ready を待って再購読（鍵確立や再接続後）
             try {
                 const conn = this.receiver?.voiceConnection;
@@ -189,6 +218,12 @@ export class VoiceSession {
             return;
         }
         console.log(`[seg] start user=${this.userId} seg=${this.segIndex} baseId=${this.baseId}`);
+        // ★ PCM流入時にタイムスタンプ更新＋ストリーマへ供給（単一ハンドラに統一）
+        this.decoder.on('data', (pcm) => {
+            this._lastPCMAt = Date.now();
+            // pcm は Int16LE の Buffer なのでそのまま渡してOK
+            this._streamer?.appendPCM(pcm);
+        });
 
         this.opusStream
             .pipe(this.decoder)
@@ -198,11 +233,76 @@ export class VoiceSession {
 
         if (this.forceTimer) clearTimeout(this.forceTimer);
         this.forceTimer = setTimeout(() => this._endSegment(true), UTTER_MAX_MS);
+
+        // === 疑似ストリーミングASR（部分はOBSのみ）===
+        // ここに確実に存在する吐き出し先ディレクトリを指定（/tmp を避ける）
+        // === 疑似ストリーミングASR（部分はOBSのみ）===
+        // 出力先は streamOutDir を唯一のソースに統一
+        const streamOutDir = (CFG.stream?.outDir)
+            ? path.resolve(CFG.stream.outDir)
+            : path.join(this.recordingsDir, '_stream');
+        try { fs.mkdirSync(streamOutDir, { recursive: true }); } catch { /* noop */ }
+        this._streamer = new StreamingTranscriber({
+            // 発話中に刻々と出すため短めに
+            flushIntervalMs: 600,
+            // 短い断片でも拾う（約0.17秒相当）
+            minBytes: 16000,
+            outDir: streamOutDir,
+            phraseWindowMs: PHRASE_WINDOW_MS,
+            phraseMaxKeep: PHRASE_MAX_KEEP,
+            onPartial: (t) => {
+                if (process.env.WHISPER_DEBUG === '1') {
+                    // baseId が動的に変わるので前後関係を追いやすくする
+                    console.log('[partial]', { user: this.userId, baseId: this.baseId, len: t.length, head: t.slice(0, 60) });
+                }
+                // 初回flush時にスピーカーメタを用意
+                if (!this.firstFlushDone) {
+                    const sp = getSpeaker(this.userId);
+                    this.speakerName = sp?.name || 'Speaker';
+                    this.firstFlushDone = true;
+                }
+                // OBSのみ更新（Discordは確定のみ）: side/color も載せると前段で安定
+                const sp = getSpeaker(this.userId) || {};
+                this.io?.emit('transcript_partial', {
+                    id: this.baseId,
+                    userId: this.userId,
+                    name: this.speakerName,
+                    side: sp.side,
+                    color: sp.color,
+                    avatar: sp.avatar,
+                    icon: sp.icon,
+                    text: t,
+                    lang: 'ja',
+                    ts: Date.now(),
+                });
+            },
+            onFinal: (_t) => {
+                // Discordは確定のみ（_endSegment 側で endedBaseId を使って送信）
+            },
+        });
+        this._streamer.start();
+        // === 無音ウォッチドッグ（VADより十分長く待つ）（単一に統一）===
+        this._lastPCMAt = Date.now();
+        clearInterval(this._inactTimer);
+        const idleLimit = Math.max(3500, VAD_SILENCE_MS * 3);
+        this._inactTimer = setInterval(() => {
+            const idleMs = Date.now() - (this._lastPCMAt || 0);
+            if (idleMs > idleLimit) {
+                clearInterval(this._inactTimer);
+                this._inactTimer = null;
+                this._failCurrentSegment('inactivity').catch(() => { });
+            }
+        }, 500);
     }
 
     _endSegment(forced = false) {
         if (process.env.WHISPER_DEBUG === '1') console.log('[seg:end]', { user: this.userId, iid: this._iid, baseId: this.baseId });
-        if (!this.wavWriter) return;
+        if (!this.wavWriter) {
+            // ★ ライタ未生成でも必ずガード解放
+            const g = ACTIVE_SEG.get(this.userId);
+            if (g && g.baseId === this.baseId) ACTIVE_SEG.delete(this.userId);
+            return;
+        }
         const durMs = Date.now() - this.segStart;
         const tooShort = durMs < MIN_SEG_MS;
 
@@ -228,6 +328,10 @@ export class VoiceSession {
         setTimeout(async () => {
             try {
                 if (tooShort) { try { if (fs.existsSync(thisWav)) fs.unlinkSync(thisWav); } catch { }; return; }
+
+                // まずストリーマを確定（最終パーシャルを拾う）
+                try { await this._streamer?.finalize?.(); } catch { }
+                this._streamer = null;
 
                 const st = fs.statSync(thisWav);
                 if (st.size < MIN_WAV_BYTES) {
@@ -294,7 +398,13 @@ export class VoiceSession {
             } catch (e) {
                 console.error('❌ Whisper error:', e);
             } finally {
+                // ★部分ストリーマの最終処理（OBSはpartial→finalの順で上書き）
+                try { await this._streamer?.finalize?.(); } catch { }
+                this._streamer = null;
                 try { if (fs.existsSync(thisWav)) fs.unlinkSync(thisWav); } catch { }
+                // 発話ガードを解放
+                const g = ACTIVE_SEG.get(this.userId);
+                if (g && g.baseId === this.baseId) ACTIVE_SEG.delete(this.userId);
             }
         }, 100);
 
@@ -371,6 +481,11 @@ export class VoiceSession {
 
         try { this._endSegment(false); } catch { }
         if (this.forceTimer) { clearTimeout(this.forceTimer); this.forceTimer = null; }
+        if (this._inactTimer) { clearInterval(this._inactTimer); this._inactTimer = null; }
+
+        // ★ 念押し：まだ残っていたら解放
+        const g = ACTIVE_SEG.get(this.userId);
+        if (g && g.baseId === this.baseId) ACTIVE_SEG.delete(this.userId);
 
         setTimeout(() => { this._dispose(); }, 50);
         this._subscribed = false; // 次回発話で再購読できるように

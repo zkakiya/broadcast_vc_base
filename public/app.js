@@ -1,11 +1,15 @@
 // public/app.js (full replace)
 (() => {
   // ---- Global namespace ----
+  // どのファイルからも window.BVC を G として使えるように“別名”を用意
   if (!window.BVC) window.BVC = {};
-  const GLOBAL = window.BVC;
+  const GLOBAL = window.BVC;   // 既存互換（このファイル内）
+  const G = window.BVC;        // 他のページからは G を使う想定（window.BVC の別名）
+  const qs = new URLSearchParams(location.search);
+  // debug=1 でソケット受信ログを出す
+  if (qs.get('debug') === '1') window.DEBUG_SOCKET = 1;
 
   // ---- URL params (fade/font/mode) ----
-  const qs = new URLSearchParams(location.search);
   GLOBAL.fadeSec = Number(qs.get('fade') || 30);
   GLOBAL.fontPx = Number(qs.get('font') || 36);
   let RUN_MODE = (qs.get('mode') || '').toLowerCase(); // 'single'|'multi'|''
@@ -16,10 +20,17 @@
     console.error('[app] socket.io client not found');
     return;
   }
-  GLOBAL.socket = io();
-  GLOBAL.socket.on('connect', () => console.log('[app] socket connected', GLOBAL.socket.id));
-  GLOBAL.socket.on('disconnect', () => console.log('[app] disconnected'));
-
+  // socket.io シングルトン
+  let _socket = null;
+  function getSocket() {
+    if (_socket) return _socket;
+    _socket = io();
+    _socket.on('connect', () => console.log('[app] socket connected', _socket.id));
+    _socket.on('disconnect', () => console.log('[app] disconnected'));
+    return _socket;
+  }
+  GLOBAL.socket = getSocket();   // 既存互換
+  G.getSocket = getSocket;       // 明示的に取得もできるように公開
   // ---- Mode decide (URL > /healthz > default) ----
   async function decideMode() {
     if (RUN_MODE === 'single' || RUN_MODE === 'multi') return RUN_MODE;
@@ -165,14 +176,22 @@
 
   // ---- Wire socket events (dedup) ----
   let _wired = false;
-  GLOBAL.wireSocket = (handlers) => {
+  // transcript（確定）/ transcript_partial（部分）/ translation_update（訳）を束ねる
+  GLOBAL.wireSocket = (handlers = {}) => {
     if (_wired) return;
     _wired = true;
-    const s = GLOBAL.socket;
-    if (!s) { console.error('[app] GLOBAL.socket missing'); return; }
-    const { onTranscript, onUpdate } = handlers || {};
+    const s = getSocket();
+    if (!s) { console.error('[app] socket missing'); return; }
+    const { onTranscript, onPartial, onUpdate } = handlers || {};
     if (onTranscript) s.on('transcript', onTranscript);
-    if (onUpdate) s.on('transcript_update', onUpdate);
+    if (onPartial) s.on('transcript_partial', onPartial);
+    // ※ イベント名を server 側と合わせる：translation_update に統一
+    if (onUpdate) s.on('translation_update', onUpdate);
+    if (window.DEBUG_SOCKET) {
+      s.on('transcript', (p) => console.log('SOCKET: transcript', p));
+      s.on('transcript_partial', (p) => console.log('SOCKET: partial', p));
+      s.on('transcript_update', (p) => console.log('SOCKET: update', p));
+    }
   };
 
   // ---- Render all avatars at startup (dimmed) ----

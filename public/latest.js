@@ -56,6 +56,15 @@
       nowEl.classList.add('is-fading');
     });
   }
+  // ★ 追加：パーシャル（発話中の途中経過）
+  function onPartial(payload) {
+    const id = G.asId(payload.userId);
+    G.ensureDeckAvatar({ ...payload, userId: id });
+    G.setActive(id);
+    nowEl.classList.remove('is-fading');
+    renderBubble({ ...payload, userId: id });
+    // タイマーは延長しない（好みで G.startFadeTimer を呼んでもOK）
+  }
 
   function onUpdate(upd) {
     const { id, tr } = upd || {};
@@ -71,5 +80,6 @@
     // フェード延長はしない（好みで呼び出してOK）
   }
 
-  G.wireSocket({ onTranscript, onUpdate });
+  // ★部分・確定・訳更新をまとめて配線
+  G.wireSocket({ onTranscript, onPartial, onUpdate });
 })();

@@ -7,6 +7,9 @@ import * as voice from './discord/voice.js';
 
 import pkg from '../package.json' with { type: 'json' };
 import { createRequire } from 'module';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import fs from 'fs';
 const req = createRequire(import.meta.url);
 
 function safeRequire(name) {
@@ -31,7 +34,27 @@ assertConfig();
 
   // Cleanup
   console.log('[boot] cleanup…');
-  cleanRecordingsDir(CFG.cleanupDir);
+  // recordings / recordings/_stream を既定ターゲットとして決定
+  const __filename = fileURLToPath(import.meta.url);
+  const __dirname = path.dirname(__filename);
+  const recordingsDir = path.join(__dirname, 'recordings');
+  const streamDir = path.join(recordingsDir, '_stream');
+  try { fs.mkdirSync(recordingsDir, { recursive: true }); } catch { }
+  try { fs.mkdirSync(streamDir, { recursive: true }); } catch { }
+
+  // 互換：CFG.cleanupDir があれば追加対象に、配列指定にも対応
+  const extra = [];
+  if (CFG.cleanupDir) extra.push(CFG.cleanupDir);
+  if (Array.isArray(CFG.cleanup?.dirs)) extra.push(...CFG.cleanup.dirs);
+
+  const maxAgeMinutes = Number(CFG.cleanup?.maxAgeMinutes ?? 0);   // 0=全削除（音声拡張子のみ）
+  const dryRun = Boolean(CFG.cleanup?.dryRun ?? false);
+
+  // 既定 + 追加ターゲットをユニーク化して順次クリーンアップ
+  const targets = [...new Set([recordingsDir, streamDir, ...extra].filter(Boolean))];
+  for (const dir of targets) {
+    await cleanRecordingsDir({ dir, maxAgeMinutes, dryRun });
+  }
 
   // Webサーバー起動
   const io = await startWebServer(CFG.port);
