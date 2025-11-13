@@ -1,138 +1,139 @@
-// 疑似ストリーミング: 一定間隔でWAV化→既存transcribeを呼ぶ
+// 疑似ストリーミング: 一定間隔でWAV化→既存transcribeを呼ぶ（サイズ判定は "PCM長" で行う）
 import fs from 'fs';
 import path from 'path';
+import wav from 'wav';
 import { transcribeAudioGPU } from './transcribe.js';
 import { canonicalizeForDup } from '../utils/text_sanitize.js';
 
-function pcm16ToWavBuffer(pcmBuf, sampleRate = 48000, channels = 1) {
-    const byteRate = sampleRate * channels * 2; // 16bit
-    const blockAlign = channels * 2;
-    const dataSize = pcmBuf.length;
-    const riffSize = 36 + dataSize;
-
-    const h = Buffer.alloc(44);
-    h.write('RIFF', 0);                 // ChunkID
-    h.writeUInt32LE(riffSize, 4);       // ChunkSize
-    h.write('WAVE', 8);                 // Format
-    h.write('fmt ', 12);                // Subchunk1ID
-    h.writeUInt32LE(16, 16);            // Subchunk1Size (PCM)
-    h.writeUInt16LE(1, 20);             // AudioFormat (PCM=1)
-    h.writeUInt16LE(channels, 22);      // NumChannels
-    h.writeUInt32LE(sampleRate, 24);    // SampleRate
-    h.writeUInt32LE(byteRate, 28);      // ByteRate
-    h.writeUInt16LE(blockAlign, 32);    // BlockAlign
-    h.writeUInt16LE(16, 34);            // BitsPerSample
-    h.write('data', 36);                // Subchunk2ID
-    h.writeUInt32LE(dataSize, 40);      // Subchunk2Size
-
-    return Buffer.concat([h, pcmBuf]);
-}
+const STREAM_DEBUG = process.env.STREAM_DEBUG === '1';
 
 export class StreamingTranscriber {
     /**
      * @param {object} p
-     * @param {number} p.flushIntervalMs  // 例: 1200
+     * @param {number} p.flushIntervalMs
      * @param {(t:string)=>void} p.onPartial
      * @param {(t:string)=>void} p.onFinal
-     * @param {number} [p.minBytes]       // 例: 48000
-     * @param {number} [p.phraseWindowMs] // デュープ窓、例: 6000
-     * @param {number} [p.phraseMaxKeep]  // 例: 12
-     * @param {string} [p.outDir]  // 一時WAVの出力先（必ず存在するディレクトリを渡す）
+     * @param {number} [p.minBytes]       // PCMの最小バイト数（ファイルサイズではない）
+     * @param {number} [p.phraseWindowMs]
+     * @param {number} [p.phraseMaxKeep]
+     * @param {string} [p.outDir]
      */
     constructor({ flushIntervalMs, onPartial, onFinal, minBytes = 16000, phraseWindowMs = 6000, phraseMaxKeep = 12, outDir }) {
         this.flushIntervalMs = flushIntervalMs;
         this.onPartial = onPartial;
         this.onFinal = onFinal;
-        // 一旦しきい値を少し緩める（短文で発火させるため）
-        this.minBytes = Math.max(8000, Number(minBytes) || 16000);
+        this.minBytes = minBytes;
         this.phraseWindowMs = phraseWindowMs;
         this.phraseMaxKeep = phraseMaxKeep;
 
         this._pcmChunks = []; // Buffer[]
         this._timer = null;
-        if (process.env.WHISPER_DEBUG === '1') {
-            console.log('[stream] start interval=', this.flushIntervalMs, 'minBytes=', this.minBytes);
-        }
         this._closed = false;
         this._recentCanon = []; // {canon, ts}
         this._lastText = { text: null, ts: 0 };
-        this._inflight = Promise.resolve(); // 直列実行
-        this.outDir = outDir || process.cwd(); // フォールバック
-        try { fs.mkdirSync(this.outDir, { recursive: true }); } catch { }
+        this._inflight = Promise.resolve(); // 直列化
+        this.outDir = outDir || process.cwd();
+        try { fs.mkdirSync(this.outDir, { recursive: true }); } catch { /* noop */ }
 
+        if (STREAM_DEBUG) console.log('[stream] ctor interval=', this.flushIntervalMs, 'minBytes=', this.minBytes);
     }
 
     start() {
         if (this._timer) return;
         this._timer = setInterval(() => { this._flush(false); }, this.flushIntervalMs);
-        if (process.env.WHISPER_DEBUG === '1') console.log('[stream] start', this.flushIntervalMs, this.minBytes);
-
-        if (process.env.WHISPER_DEBUG === '1') {
-            console.log('[stream] start interval=', this.flushIntervalMs, 'minBytes=', this.minBytes);
-        }
+        if (STREAM_DEBUG) console.log('[stream] start', this.flushIntervalMs, this.minBytes);
     }
 
     appendPCM(int16buf) {
         if (this._closed) return;
-        // Int16Array or Buffer → Buffer
-        const buf = Buffer.isBuffer(int16buf) ? int16buf : Buffer.from(int16buf.buffer, int16buf.byteOffset, int16buf.byteLength);
+        const buf = Buffer.isBuffer(int16buf)
+            ? int16buf
+            : Buffer.from(int16buf.buffer, int16buf.byteOffset, int16buf.byteLength);
         this._pcmChunks.push(buf);
     }
 
     async _flush(final) {
         if (this._closed && !final) return;
+
+        // ここで「PCM合計バイト数」を確定（これで閾値判定する）
         const pcm = Buffer.concat(this._pcmChunks);
-        if (!final) {
-            // 小さすぎるならスキップ
-            if (pcm.length < this.minBytes) return;
+        const pcmBytes = pcm.length;
+        if (STREAM_DEBUG) console.log('[stream][flush] begin', { final, pcmBytes });
+
+        // 非finalでは短すぎるものを即スキップ（ファイル書かない）
+        if (!final && pcmBytes < this.minBytes) {
+            if (STREAM_DEBUG) console.log('[stream][flush] skip:short', { pcmBytes, need: this.minBytes });
+            return;
         }
+
+        // 次の flush に備えて蓄積をクリア
         this._pcmChunks = [];
 
-        // 直列で処理（最新を上書きできれば十分）
+        // 直列化して順序を保証
         this._inflight = this._inflight.then(async () => {
-            const dbg = (msg, extra) => {
-                if (process.env.STREAM_DEBUG === '1' || process.env.WHISPER_DEBUG === '1') {
-                    console.log('[stream][flush]', msg, extra || '');
-                }
-            };
-            dbg('begin', { final, pcmBytes: pcm.length });
+            // final でも「短すぎる」ならスキップ（無音終端対策）
+            if (final && pcmBytes < this.minBytes) {
+                if (STREAM_DEBUG) console.log('[stream][flush] skip:short(final)', { pcmBytes, need: this.minBytes });
+                return;
+            }
             const tmp = path.join(this.outDir, `strm-${Date.now()}-${Math.random().toString(36).slice(2)}.wav`);
             try {
-                // 16-bit mono 48k WAV を自前で生成して一括書き込み
-                const wavBuf = pcm16ToWavBuffer(pcm, 48000, 1);
-                fs.writeFileSync(tmp, wavBuf);
+                // WAVに包む（finish まで待機）
+                await new Promise((res, rej) => {
+                    const writer = new wav.FileWriter(tmp, { sampleRate: 48000, channels: 1 });
+                    writer.on('finish', res);
+                    writer.on('error', rej);
+                    writer.end(pcm);
+                });
 
-                // ファイルサイズではなく、元PCM長でしきい値を判定（FS差異回避）
-                if (pcm.length < this.minBytes) { dbg('skip:short', { pcmBytes: pcm.length, need: this.minBytes }); return; }
-                if (process.env.WHISPER_DEBUG === '1') {
-                    console.log('[stream] wav bytes:', st.size);
+                // ここでファイルサイズは見ない（環境で0になるケースがあったため）
+                // 実際の内容量は pcmBytes を根拠にする。
+                if (STREAM_DEBUG) {
+                    try {
+                        const st = fs.statSync(tmp);
+                        console.log('[stream][flush] wrote wav', { fileBytes: st.size, pcmBytes });
+                    } catch { /* ignore */ }
                 }
 
-                const text = await transcribeAudioGPU(tmp).catch(err => {
-                    dbg('asr:error', String(err && err.message || err));
-                    return '';
-                });
+                // ASR（短すぎるものはここには来ない）
+                const text = await transcribeAudioGPU(tmp);
                 const t = String(text || '').trim();
-                if (!t) { dbg('empty-asr'); return; }
-                dbg('text', { len: t.length, sample: t.slice(0, 40) });
+                if (!t) {
+                    if (STREAM_DEBUG) console.log('[stream][flush] asr: empty');
+                    return;
+                }
 
                 // デュープ抑止
                 const now = Date.now();
                 const canon = canonicalizeForDup(t);
                 this._recentCanon = this._recentCanon.filter(x => now - x.ts <= this.phraseWindowMs);
-                if (!final && this._recentCanon.some(x => x.canon === canon)) return;
+                if (!final && this._recentCanon.some(x => x.canon === canon)) {
+                    if (STREAM_DEBUG) console.log('[stream][flush] dup-skip', { t: t.slice(0, 40) });
+                    return;
+                }
                 this._recentCanon.push({ canon, ts: now });
                 if (this._recentCanon.length > this.phraseMaxKeep) this._recentCanon.shift();
 
-                if (!final && this._lastText.text === t && now - this._lastText.ts < 1200) return;
+                if (!final && this._lastText.text === t && now - this._lastText.ts < 1200) {
+                    if (STREAM_DEBUG) console.log('[stream][flush] dedup-skip same-latest');
+                    return;
+                }
                 this._lastText = { text: t, ts: now };
 
-                if (final) this.onFinal?.(t);
-                else this.onPartial?.(t);
+                if (final) {
+                    if (STREAM_DEBUG) console.log('[stream][flush] emit FINAL', t.slice(0, 60));
+                    this.onFinal?.(t);
+                } else {
+                    if (STREAM_DEBUG) console.log('[stream][flush] emit PARTIAL', t.slice(0, 60));
+                    this.onPartial?.(t);
+                }
+            } catch (e) {
+                console.error('[stream][flush] error', e?.message || e);
             } finally {
-                try { fs.unlinkSync(tmp); } catch { }
+                try { fs.unlinkSync(tmp); } catch { /* noop */ }
             }
-        }).catch(() => { });
+        }).catch(() => { /* swallow */ });
+
         await this._inflight;
     }
 
@@ -140,7 +141,7 @@ export class StreamingTranscriber {
         if (this._closed) return;
         this._closed = true;
         if (this._timer) { clearInterval(this._timer); this._timer = null; }
-        // 最後に残りを1度だけ確定
         await this._flush(true);
+        if (STREAM_DEBUG) console.log('[stream] finalized');
     }
 }

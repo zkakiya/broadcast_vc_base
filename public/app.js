@@ -183,8 +183,14 @@
     const s = getSocket();
     if (!s) { console.error('[app] socket missing'); return; }
     const { onTranscript, onPartial, onUpdate } = handlers || {};
-    if (onTranscript) s.on('transcript', onTranscript);
-    if (onPartial) s.on('transcript_partial', onPartial);
+    if (onTranscript) {
+      s.on('transcript', onTranscript);        // 旧: 確定
+      s.on('transcript_final', onTranscript);  // 新: 安定化後の確定
+    }
+    if (onPartial) {
+      s.on('transcript_partial', onPartial);   // 旧: 断片（互換）
+      s.on('transcript_update', onPartial);    // 新: 安定化済みの逐次更新
+    }
     // ※ イベント名を server 側と合わせる：translation_update に統一
     if (onUpdate) s.on('translation_update', onUpdate);
     if (window.DEBUG_SOCKET) {
