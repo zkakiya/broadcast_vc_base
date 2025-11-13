@@ -18,7 +18,7 @@
     /* 発話中の拡大率 */
     --pfp-ring-color: #47a3ff;
     /* 発光カラー */
-    --pfp-bob-amp: 1.25%%;
+    --pfp-bob-amp: 2.0%;
     /* 上下動の振幅 */
     --pfp-bob-dur: 1.4s;
     /* 上下動の周期 */
@@ -91,7 +91,7 @@ body {
     /* まずは明るさ・彩度を少しだけ上げる */
     filter: brightness(1.12) saturate(1.05) contrast(1.02) drop-shadow(0 0 8px color-mix(in srgb, var(--pfp-ring-color), transparent 70%));
     transform: translate(-50%, -50%) scale(var(--pfp-active-scale));
-    z-index: var(--pfp-z-active, 20);
+    /* z-index: var(--pfp-z-active, 20); */
     /* ふわっと上下動＋発光の鼓動 */
     animation:
         avatarBob var(--pfp-bob-dur) ease-in-out infinite,

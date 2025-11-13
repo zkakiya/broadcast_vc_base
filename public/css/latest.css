@@ -57,6 +57,9 @@
 
 .bubble .text {
     -webkit-text-stroke: 0.8px #000000;
+    line-height: 1.1em;
+    margin-bottom: 0.2em;
+    margin-top: 0.2em;
 }
 
 .bubble .tr {
